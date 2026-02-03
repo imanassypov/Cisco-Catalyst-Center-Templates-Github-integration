@@ -138,6 +138,44 @@ The playbook performs the following validations before creating or updating comp
 - ✅ Confirms all template IDs are resolved successfully
 - ⚠️ Skips composites with missing child templates (with warning)
 
+### Composite Payload Creation Flow
+
+The playbook creates composite template payloads through the following stages:
+
+1. **Discovery** – Recursively finds all `.yml` definition files in the synced Git repository
+
+2. **Load Definitions** – Parses each YAML file to extract the composite name and ordered template list:
+   ```yaml
+   composite_definitions: [{
+     'name': 'BGP-EVPN-BUILD.j2',
+     'definition_path': '/path/to/BGP-EVPN-BUILD.yml',
+     'template_names': ['FABRIC-VRF.j2', 'FABRIC-LOOPBACKS.j2', ...]
+   }]
+   ```
+
+3. **Prepare API List** – Builds initial structure with template names and determines if composite exists:
+   ```yaml
+   composite_api_list: [{
+     'name': 'BGP-EVPN-BUILD.j2',
+     'existing_id': '...',  # or '' if new
+     'is_new': true/false,
+     'containingTemplates': [{'name': 'FABRIC-VRF.j2', 'composite': false}, ...]
+   }]
+   ```
+
+4. **Resolve IDs** – The included `composite-resolve-ids.yml` resolves each template name to its Catalyst Center ID:
+   ```yaml
+   resolved_templates: [{
+     'name': 'FABRIC-VRF.j2',
+     'id': '75ec3be5-7fd4-4110-aaef-071e1b768179',
+     'composite': false,
+     'language': 'JINJA',
+     ...
+   }]
+   ```
+
+5. **API Call** – Creates or updates the composite template with fully resolved `containingTemplates`
+
 ---
 
 ## Compatibility Matrix
@@ -176,7 +214,7 @@ ansible-galaxy collection install -r requirements.yml
 2. Create `vault.yml` with your credentials and encrypt it:
 
    ```bash
-   ansible-vault encrypt ansible-git-dnac/vault.yml
+   ansible-vault encrypt ansible-git-catc/vault.yml
    ```
 
 ## Usage
@@ -184,19 +222,19 @@ ansible-galaxy collection install -r requirements.yml
 Run the playbook with a vault password file:
 
 ```bash
-ansible-playbook ansible-git-dnac/ansible-git-dnac.yml --vault-password-file .vault_pass
+ansible-playbook ansible-git-catc/ansible-git-catc.yml --vault-password-file .vault_pass
 ```
 
 Alternatively, use an interactive vault password prompt:
 
 ```bash
-ansible-playbook ansible-git-dnac/ansible-git-dnac.yml --ask-vault-pass
+ansible-playbook ansible-git-catc/ansible-git-catc.yml --ask-vault-pass
 ```
 
 Enable debug mode for verbose output:
 
 ```bash
-DEBUG=true ansible-playbook ansible-git-dnac/ansible-git-dnac.yml --vault-password-file .vault_pass
+DEBUG=true ansible-playbook ansible-git-catc/ansible-git-catc.yml --vault-password-file .vault_pass
 ```
 
 ## Example Output
@@ -214,3 +252,9 @@ The screenshot below demonstrates the playbook's capabilities:
 - [CI/CD Pipeline Demo with Cisco Catalyst Center](https://gitlab.com/oboehmer/dnac-template-as-code) by Oliver Boehmer — inspiration for this project
 - [Cisco DNA Center Ansible Collection](https://cisco-en-programmability.github.io/dnacenter-ansible/main/plugins/index.html) — official Ansible Galaxy module documentation
 - [Cisco Catalyst Center API Reference](https://developer.cisco.com/docs/dna-center/) — official API documentation
+
+## Author
+
+**Igor Manassypov**  
+Solutions Architect, Cisco Systems  
+📧 [imanassy@cisco.com](mailto:imanassy@cisco.com)

@@ -1,4 +1,4 @@
-# Ansible Galaxy collection requirements for ansible-git-dnac
+# Ansible Galaxy collection requirements for ansible-git-catc
 # Compatible with Cisco Catalyst Center version 2.3.7.9
 
 collections:

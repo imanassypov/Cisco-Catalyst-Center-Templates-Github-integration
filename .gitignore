@@ -1,7 +1,9 @@
 venv
 dnac_git_templates
 # Ansible Vault secrets
-ansible-git-dnac/vault.yml
+ansible-git-catc/vault.yml
 .vault_pass
 # Cloned template repositories (managed separately)
 CatC Templates/
+# Copilot instructions
+.github/copilot-instructions.md

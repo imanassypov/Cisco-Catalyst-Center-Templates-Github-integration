@@ -1,10 +1,10 @@
-# Copilot Instructions for ansible-git-dnac
+# Copilot Instructions for ansible-git-catc
 
 ## Project Overview
 GitOps automation for Cisco Catalyst Center templates. Syncs Jinja2 templates from Git → Cisco Catalyst Center Template Projects, auto-versioning with Git commit metadata.
 
 ## Architecture (Single Playbook)
-[ansible-git-dnac/ansible-git-dnac.yml](ansible-git-dnac/ansible-git-dnac.yml) executes this flow:
+[ansible-git-catc/ansible-git-catc.yml](ansible-git-catc/ansible-git-catc.yml) executes this flow:
 1. Clone Git repo → 2. Find `*.j2` files → 3. Extract commit/diff metadata → 4. Create/update Cisco Catalyst Center templates → 5. Version with commit message
 
 Key data structure pattern—lists merged incrementally by `name` key:
@@ -15,9 +15,9 @@ template_id_list: "{{ template_git_list | community.general.lists_mergeby(templa
 ## File Structure
 | File | Purpose |
 |------|---------|
-| `ansible-git-dnac/ansible-git-dnac.yml` | Main playbook (all logic in one file) |
-| `ansible-git-dnac/credentials.yml` | Cisco Catalyst Center host, Git repo URL, `dnac_version` |
-| `ansible-git-dnac/vault.yml` | Encrypted credentials (`dnac_username`, `dnac_password`) |
+| `ansible-git-catc/ansible-git-catc.yml` | Main playbook (all logic in one file) |
+| `ansible-git-catc/credentials.yml` | Cisco Catalyst Center host, Git repo URL, `dnac_version` |
+| `ansible-git-catc/vault.yml` | Encrypted credentials (`dnac_username`, `dnac_password`) |
 | `requirements.txt` / `requirements.yml` | Python + Ansible collection deps |
 | `ENSEVT-TEMPLATES/`, `CatalystCenter-BGP-EVPN-VXLAN/` | Sample template repos |
 
@@ -61,12 +61,12 @@ ansible-galaxy collection install -r requirements.yml
 
 ### Run (with Vault)
 ```bash
-ansible-playbook ansible-git-dnac/ansible-git-dnac.yml --vault-password-file .vault_pass
+ansible-playbook ansible-git-catc/ansible-git-catc.yml --vault-password-file .vault_pass
 ```
 
 ### Debug Mode
 ```bash
-DEBUG=true ansible-playbook ansible-git-dnac/ansible-git-dnac.yml --vault-password-file .vault_pass
+DEBUG=true ansible-playbook ansible-git-catc/ansible-git-catc.yml --vault-password-file .vault_pass
 ```
 
 ## Constraints
