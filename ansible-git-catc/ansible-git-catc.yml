@@ -13,9 +13,10 @@
     # Include Git diff header as Jinja comment at top of template content
     INCLUDE_DIFF_HEADER: false
     # Default device targeting (can be overridden per-template via hint comment)
-    # Hint format in template: {## CATC: productFamily=Switches and Hubs, softwareType=IOS-XE ##}
+    # Hint format: {## CATC: productFamily=Switches and Hubs, softwareType=IOS-XE, productSeries=Cisco Catalyst 9000 Series Virtual Switches ##}
     DEFAULT_PRODUCT_FAMILY: "Switches and Hubs"
     DEFAULT_SOFTWARE_TYPE: "IOS-XE"
+    DEFAULT_PRODUCT_SERIES: "Cisco Catalyst 9000 Series Virtual Switches"
 
   # Common connection parameters for all cisco.dnac modules
   module_defaults:
@@ -43,15 +44,6 @@
       debug: 
         msg: "{{ start_timestamp.date + ' ' + start_timestamp.time}}"
 
-    - name: Get Project name from matching Git repo
-      set_fact:
-        projectName: "{{ (git_repo | regex_search('.*\/([^\/]*).git', '\\1'))[0]}}"
-
-    - name: --DEBUG-- Project Name
-      when: DEBUG
-      debug: 
-        msg: "{{ projectName }}"
-
     - name: Clone templates project from the GitHub repo
       ansible.builtin.git:
         accept_hostkey: yes
@@ -69,6 +61,15 @@
         recurse: yes
         file_type: file
       register: template_file_list
+
+    - name: Get Project name from template folder
+      set_fact:
+        projectName: "{{ template_file_list.files[0].path | dirname | basename }}"
+
+    - name: --DEBUG-- Project Name
+      when: DEBUG
+      debug: 
+        msg: "{{ projectName }}"
 
     - name: Get template commit messages
       ansible.builtin.shell:
@@ -117,9 +118,11 @@
                                                                   'id': '',
                                                                   'language': 'JINJA',
                                                                   'path': item.path,
-                                                                  'payload': lookup('file',item.path),
+                                                                  'payload': lookup('file',item.path) | replace('{{ TEMPLATE_PROJECT_NAME }}', item.path | dirname | basename),
                                                                   'productFamily': (lookup('file',item.path) | regex_search('\\{##\\s*CATC:.*productFamily=([^,}#]+)', '\\1') | default([DEFAULT_PRODUCT_FAMILY], true) | first | trim),
                                                                   'softwareType': (lookup('file',item.path) | regex_search('\\{##\\s*CATC:.*softwareType=([^,}#]+)', '\\1') | default([DEFAULT_SOFTWARE_TYPE], true) | first | trim),
+                                                                  'productSeries': (lookup('file',item.path) | regex_search('\\{##\\s*CATC:.*productSeries=([^,}#]+)', '\\1') | default([DEFAULT_PRODUCT_SERIES], true) | first | trim),
+                                                                  'deviceType': (lookup('file',item.path) | regex_search('\\{##\\s*CATC:.*deviceType=([^,}#]+)', '\\1') | default([''], true) | first | trim),
                                                                   } ] }}"
       with_items: "{{ template_file_list.files }}"
 
@@ -206,6 +209,7 @@
       set_fact:  
         template_dnac_content_list: "{{ template_dnac_content_list|default([]) + [ {'dnac_template_content': item.dnac_response.templateContent,
                                                                                     'name': item.dnac_response.name,
+                                                                                    'dnac_deviceTypes': item.dnac_response.deviceTypes | default([]),
                                                                                     } ] 
                                       }}"
       with_items: "{{ template_dnac_content.results }}"
@@ -217,6 +221,7 @@
                               community.general.lists_mergeby(template_dnac_content_list, 'name')
                             }}"
 
+    # deviceTypes structure: [{productFamily, productSeries}] - no productType needed per CatC export format
     - name: Create new templates in Cisco Catalyst Center
       when: (item.composite is not defined or item.composite == false) and item.id == ''
       cisco.dnac.configuration_template_create:
@@ -224,7 +229,8 @@
         composite: false
         description: "description"
         deviceTypes:
-        - productFamily: "{{ item.productFamily | default(DEFAULT_PRODUCT_FAMILY) }}"
+          - productFamily: "{{ item.productFamily | default(DEFAULT_PRODUCT_FAMILY) }}"
+            productSeries: "{{ item.productSeries | default(DEFAULT_PRODUCT_SERIES) }}"
         language: "{{ item.language }}"
         name: "{{ item.name }}"
         projectId: "{{ template_project_id }}"
@@ -233,14 +239,21 @@
         version: "1.0"
       with_items: "{{ template_id_list }}"
 
+    # deviceTypes structure: [{productFamily, productSeries}] - no productType needed per CatC export format
     - name: Update existing templates in Cisco Catalyst Center
-      when: (item.composite is not defined or item.composite == false) and item.id != '' and (item.diff_msg if INCLUDE_DIFF_HEADER else '') + item.payload != item.dnac_template_content
+      when: >
+        (item.composite is not defined or item.composite == false) and item.id != '' and item.payload is defined and
+        (
+          (item.diff_msg if INCLUDE_DIFF_HEADER else '') + item.payload != item.dnac_template_content or
+          (item.productSeries | default(DEFAULT_PRODUCT_SERIES)) != (item.dnac_deviceTypes | default([]) | map(attribute='productSeries') | list | first | default(''))
+        )
       cisco.dnac.configuration_template:
         author: "{{ dnac_username }}"
         composite: false
         description: "description"
         deviceTypes:
-        - productFamily: "{{ item.productFamily | default(DEFAULT_PRODUCT_FAMILY) }}"
+          - productFamily: "{{ item.productFamily | default(DEFAULT_PRODUCT_FAMILY) }}"
+            productSeries: "{{ item.productSeries | default(DEFAULT_PRODUCT_SERIES) }}"
         name: "{{ item.name }}"
         id: "{{ item.id }}"
         language: "{{ item.language }}"
@@ -276,7 +289,9 @@
         msg: "{{ template_id_list }}"
 
     - name: Version Cisco Catalyst Center templates
-      when: (item.composite is not defined or item.composite == false) and item.id != '' and (item.dnac_template_content is not defined or (item.diff_msg if INCLUDE_DIFF_HEADER else '') + item.payload != item.dnac_template_content)
+      when: >
+        (item.composite is not defined or item.composite == false) and item.id != '' and item.payload is defined and item.commit_msg is defined and
+        (item.dnac_template_content is not defined or (item.diff_msg if INCLUDE_DIFF_HEADER else '') + item.payload != item.dnac_template_content)
       cisco.dnac.configuration_template_version_create:
         comments: "{{ (item.commit_msg)[:CATC_TEMPLATE_SUMMARY_MAXCHAR] }}"
         templateId: "{{ item.id }}"
@@ -317,6 +332,17 @@
       debug:
         msg: "{{ composite_definitions }}"
 
+    - name: Refresh template list from Cisco Catalyst Center before composite processing
+      when: composite_definitions is defined
+      cisco.dnac.configuration_template_project_info:
+        name: "{{ projectName }}"
+      register: template_project_refresh
+
+    - name: Update template_dnac_list with refreshed data
+      when: composite_definitions is defined
+      set_fact:
+        template_dnac_list: "{{ template_project_refresh.dnac_response[0].templates | default([]) }}"
+
     - name: Build template ID lookup map
       when: composite_definitions is defined
       set_fact:
@@ -332,6 +358,45 @@
       debug:
         msg: "WARNING: Missing templates in Cisco Catalyst Center: {{ missing_templates }}"
 
+    - name: Look up all templates in project including composites
+      when: composite_definitions is defined
+      cisco.dnac.configuration_template_info:
+        dnac_host: "{{ dnac_host }}"
+        dnac_username: "{{ dnac_username }}"
+        dnac_password: "{{ dnac_password }}"
+        dnac_verify: "{{ dnac_verify }}"
+        dnac_port: "{{ dnac_port }}"
+        dnac_version: "{{ dnac_version }}"
+        dnac_debug: "{{ dnac_debug }}"
+        projectNames:
+          - "{{ projectName }}"
+      register: all_templates_lookup
+      ignore_errors: yes
+
+    - name: Build composite lookup map from all templates
+      when: composite_definitions is defined and all_templates_lookup.dnac_response is defined and all_templates_lookup.dnac_response is iterable and all_templates_lookup.dnac_response is not string and all_templates_lookup.dnac_response is not mapping
+      set_fact:
+        composite_id_map: "{{ dict(all_templates_lookup.dnac_response | 
+                                   selectattr('composite', 'defined') |
+                                   selectattr('composite', 'equalto', true) | 
+                                   selectattr('id', 'defined') |
+                                   map(attribute='name') | 
+                                   zip(all_templates_lookup.dnac_response | 
+                                       selectattr('composite', 'defined') |
+                                       selectattr('composite', 'equalto', true) | 
+                                       selectattr('id', 'defined') |
+                                       map(attribute='id'))) }}"
+
+    - name: Initialize empty composite_id_map if lookup failed
+      when: composite_definitions is defined and composite_id_map is not defined
+      set_fact:
+        composite_id_map: {}
+
+    - name: --DEBUG-- show composite lookup map
+      when: DEBUG and composite_id_map is defined
+      debug:
+        msg: "{{ composite_id_map }}"
+
     - name: Build composite API list
       when: composite_definitions is defined
       set_fact:
@@ -343,8 +408,8 @@
         composite_api_list: "{{ composite_api_list + [
           {
             'name': item.name,
-            'existing_id': (template_dnac_list | selectattr('name', 'equalto', item.name) | map(attribute='id') | list | first | default('')),
-            'is_new': (template_dnac_list | selectattr('name', 'equalto', item.name) | list | length == 0),
+            'existing_id': composite_id_map[item.name] | default((template_dnac_list | selectattr('name', 'equalto', item.name) | map(attribute='id') | list | first | default(''))),
+            'is_new': (composite_id_map[item.name] | default('') == '') and (template_dnac_list | selectattr('name', 'equalto', item.name) | list | length == 0),
             'containingTemplates': item.template_names | map('community.general.dict_kv', 'name') | 
                                    list | map('combine', {'composite': false}) | list
           }
@@ -408,16 +473,49 @@
         description: "Composite template synced from Git"
         deviceTypes:
         - productFamily: "{{ DEFAULT_PRODUCT_FAMILY }}"
+          productSeries: "{{ DEFAULT_PRODUCT_SERIES }}"
         language: "JINJA"
         name: "{{ item.name }}"
         projectId: "{{ template_project_id }}"
         softwareType: "{{ DEFAULT_SOFTWARE_TYPE }}"
+        templateContent: ""
         templateParams: []
         tags: []
         containingTemplates: "{{ item.containingTemplates }}"
       with_items: "{{ composite_final_list }}"
       loop_control:
         label: "{{ item.name }}"
+      register: composite_create_result
+
+    - name: --DEBUG-- show composite create result
+      when: DEBUG and composite_create_result is defined
+      debug:
+        msg: "{{ composite_create_result }}"
+
+    - name: Wait for composite template creation task to complete
+      when: >
+        composite_create_result is defined and
+        composite_create_result.results is defined
+      cisco.dnac.task_info:
+        dnac_host: "{{ dnac_host }}"
+        dnac_username: "{{ dnac_username }}"
+        dnac_password: "{{ dnac_password }}"
+        dnac_verify: "{{ dnac_verify }}"
+        dnac_port: "{{ dnac_port }}"
+        dnac_version: "{{ dnac_version }}"
+        dnac_debug: "{{ dnac_debug }}"
+        taskId: "{{ item.dnac_response.response.taskId }}"
+      with_items: "{{ composite_create_result.results }}"
+      when: item.dnac_response is defined and item.dnac_response.response is defined
+      register: composite_task_result
+      until: composite_task_result.dnac_response.response.isError is defined or composite_task_result.dnac_response.response.endTime is defined
+      retries: 10
+      delay: 2
+
+    - name: --DEBUG-- show composite task result
+      when: DEBUG and composite_task_result is defined
+      debug:
+        msg: "{{ composite_task_result }}"
 
     - name: Update existing composite templates
       when: >
@@ -430,11 +528,13 @@
         description: "Composite template synced from Git"
         deviceTypes:
         - productFamily: "{{ DEFAULT_PRODUCT_FAMILY }}"
+          productSeries: "{{ DEFAULT_PRODUCT_SERIES }}"
         id: "{{ item.existing_id }}"
         language: "JINJA"
         name: "{{ item.name }}"
         projectId: "{{ template_project_id }}"
         softwareType: "{{ DEFAULT_SOFTWARE_TYPE }}"
+        templateContent: ""
         templateParams: []
         tags: []
         containingTemplates: "{{ item.containingTemplates }}"
