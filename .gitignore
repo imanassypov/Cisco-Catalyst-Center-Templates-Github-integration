@@ -1,0 +1,7 @@
+venv
+dnac_git_templates
+# Ansible Vault secrets
+ansible-git-dnac/vault.yml
+.vault_pass
+# Cloned template repositories (managed separately)
+CatC Templates/

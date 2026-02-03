@@ -3,17 +3,17 @@
   hosts: localhost
   vars_files:
     - credentials.yml
+    - vault.yml
   connection: local
-  gather_facts: yes 
-  vars: 
-    # dnac_host: "{{dnac_host}}"
-    # dnac_verify: false
-    # dnac_username: "{{lookup('env','DNAC_USERNAME')}}"
-    # dnac_password: "{{lookup('env','DNAC_PASSWORD')}}"
-    # dnac_debug: yes
-    DEBUG: "{{lookup('env','DEBUG')}}"
-    # DNAC Template Summary field is length-limited to 1024 chars
-    DNAC_TEMPLATE_SUMMARY_MAXCHAR: 1024
+  gather_facts: yes
+  vars:
+    DEBUG: "{{ lookup('env', 'DEBUG') | default(false) | bool }}"
+    # Cisco Catalyst Center Template Summary field is length-limited to 1024 chars
+    CATC_TEMPLATE_SUMMARY_MAXCHAR: 1024
+    # Default device targeting (can be overridden per-template via hint comment)
+    # Hint format in template: {## CATC: productFamily=Switches and Hubs, softwareType=IOS-XE ##}
+    DEFAULT_PRODUCT_FAMILY: "Switches and Hubs"
+    DEFAULT_SOFTWARE_TYPE: "IOS-XE"
 
   tasks:
 
@@ -22,7 +22,7 @@
         start_timestamp: "{{ ansible_date_time }}"
 
     - name: --DEBUG-- Execution timestamp
-      when: DEBUG is defined
+      when: DEBUG
       debug: 
         msg: "{{ start_timestamp.date + ' ' + start_timestamp.time}}"
 
@@ -31,7 +31,7 @@
         projectName: "{{ (git_repo | regex_search('.*\/([^\/]*).git', '\\1'))[0]}}"
 
     - name: --DEBUG-- Project Name
-      when: DEBUG is defined
+      when: DEBUG
       debug: 
         msg: "{{ projectName }}"
 
@@ -40,6 +40,7 @@
         accept_hostkey: yes
         repo: "{{git_repo}}"
         dest: "{{git_local_dest}}"
+        version: "{{ git_branch | default('HEAD') }}"
         update: yes
         force: yes
       register: git_clone_result
@@ -48,46 +49,48 @@
       find:
         paths: "{{git_local_dest}}"
         patterns: "*.{{template_extension}}"
-        recurse: no
+        recurse: yes
         file_type: file
       register: template_file_list
 
     - name: Get template commit messages
       ansible.builtin.shell:
-        cmd: "git log --pretty=format:\"%ad | %B [%an]\" -1 --date=short {{ item.path }}"
+        cmd: "git log --pretty=format:\"%ad | %B [%an]\" -1 --date=short -- '{{ item.path }}'"
         chdir: "{{ item.path | dirname }}"
       with_items: "{{ template_file_list.files }}"
       register: template_git_log
+      changed_when: false
 
     - name: Set template commit list
       set_fact:  
         template_commit_list: "{{ template_commit_list|default([]) + [ {'commit_msg': item.stdout,
-                                                                        'name': item.cmd | regex_search('[^\\/]*$'),
+                                                                        'name': item.cmd | regex_search('[^\\/]*\\.j2') | default(item.cmd | regex_search('[^\\/]*$')),
                                                                         } ] }}"
       with_items: "{{ template_git_log.results }}"
 
     - name: --DEBUG-- template commit list
-      when: DEBUG is defined
+      when: DEBUG
       debug:  
         msg: "{{ template_commit_list }}"
 
     - name: Get template diff log
       ansible.builtin.shell:
-        cmd: "git log --pretty=format:\"%H\" -p -1 --date=short {{ item.path }}"
+        cmd: "git log --pretty=format:\"%H\" -p -1 --date=short -- '{{ item.path }}'"
         chdir: "{{ item.path | dirname }}"
       with_items: "{{ template_file_list.files }}"
       register: template_git_diff
+      changed_when: false
 
     - name: Set template diff list
       set_fact:  
         template_diff_list: "{{ template_diff_list|default([]) + [ {'diff_msg': item.stdout | regex_replace('([^\\n]+)', '{## \\1 ##}') + '\n' ,
-                                                                    'name': item.cmd | regex_search('[^\\/]*$'),
+                                                                    'name': item.cmd | regex_search('[^\\/]*\\.j2') | default(item.cmd | regex_search('[^\\/]*$')),
                                                                     } ] 
                               }}"
       with_items: "{{ template_git_diff.results }}"
 
     - name: --DEBUG-- show template diff list
-      when: DEBUG is defined
+      when: DEBUG
       debug:  
         msg: "{{ template_diff_list }}"
 
@@ -98,63 +101,65 @@
                                                                   'language': 'JINJA',
                                                                   'path': item.path,
                                                                   'payload': lookup('file',item.path),
+                                                                  'productFamily': (lookup('file',item.path) | regex_search('\\{##\\s*CATC:.*productFamily=([^,}#]+)', '\\1') | default([DEFAULT_PRODUCT_FAMILY], true) | first | trim),
+                                                                  'softwareType': (lookup('file',item.path) | regex_search('\\{##\\s*CATC:.*softwareType=([^,}#]+)', '\\1') | default([DEFAULT_SOFTWARE_TYPE], true) | first | trim),
                                                                   } ] }}"
       with_items: "{{ template_file_list.files }}"
 
     - name: --DEBUG-- show git template list
-      when: DEBUG is defined
+      when: DEBUG
       debug:  
         msg: "{{ template_git_list }}"
 
-    - name: Get DNAC Template Project detail
+    - name: Get Cisco Catalyst Center Template Project detail
       cisco.dnac.configuration_template_project_info:
-        dnac_host: "{{dnac_host}}"
-        dnac_username: "{{dnac_username}}"
-        dnac_password: "{{dnac_password}}"
-        dnac_verify: "{{dnac_verify}}"
-        dnac_port: "{{dnac_port}}"
-        dnac_version: "{{dnac_version}}"
-        dnac_debug: "{{dnac_debug}}"
-        name: "{{projectName}}"
+        dnac_host: "{{ dnac_host }}"
+        dnac_username: "{{ dnac_username }}"
+        dnac_password: "{{ dnac_password }}"
+        dnac_verify: "{{ dnac_verify }}"
+        dnac_port: "{{ dnac_port }}"
+        dnac_version: "{{ dnac_version }}"
+        dnac_debug: "{{ dnac_debug }}"
+        name: "{{ projectName }}"
       register: template_project
 
-    - name: Create new DNAC project if not found
+    - name: Create new Cisco Catalyst Center project if not found
       when: template_project.dnac_response | length == 0
       cisco.dnac.configuration_template_project:
-        dnac_host: "{{dnac_host}}"
-        dnac_username: "{{dnac_username}}"
-        dnac_password: "{{dnac_password}}"
-        dnac_verify: "{{dnac_verify}}"
-        dnac_port: "{{dnac_port}}"
-        dnac_version: "{{dnac_version}}"
-        dnac_debug: "{{dnac_debug}}"
-        name: "{{projectName}}"
+        dnac_host: "{{ dnac_host }}"
+        dnac_username: "{{ dnac_username }}"
+        dnac_password: "{{ dnac_password }}"
+        dnac_verify: "{{ dnac_verify }}"
+        dnac_port: "{{ dnac_port }}"
+        dnac_version: "{{ dnac_version }}"
+        dnac_debug: "{{ dnac_debug }}"
+        name: "{{ projectName }}"
 
-    - name: Refresh DNAC Project detail
+    - name: Refresh Cisco Catalyst Center Project detail
       cisco.dnac.configuration_template_project_info:
-        dnac_host: "{{dnac_host}}"
-        dnac_username: "{{dnac_username}}"
-        dnac_password: "{{dnac_password}}"
-        dnac_verify: "{{dnac_verify}}"
-        dnac_port: "{{dnac_port}}"
-        dnac_version: "{{dnac_version}}"
-        dnac_debug: "{{dnac_debug}}"
-        name: "{{projectName}}"
+        dnac_host: "{{ dnac_host }}"
+        dnac_username: "{{ dnac_username }}"
+        dnac_password: "{{ dnac_password }}"
+        dnac_verify: "{{ dnac_verify }}"
+        dnac_port: "{{ dnac_port }}"
+        dnac_version: "{{ dnac_version }}"
+        dnac_debug: "{{ dnac_debug }}"
+        name: "{{ projectName }}"
       register: template_project
 
-    - name: Set matching DNAC Template Project
+    - name: Set matching Cisco Catalyst Center Template Project
       set_fact:
         template_project: "{{ template_project.dnac_response[0] }}"
 
     - name: Setting existing templates list
       set_fact:
-        template_dnac_list: "{{ template_project.templates }}"
+        template_dnac_list: "{{ template_project.templates | default([]) }}"
 
     - name: Setting project id
       set_fact:
         template_project_id: "{{ template_project.id }}"
 
-    - name: Merge template git + dnac >> id
+    - name: Merge template git + Catalyst Center >> id
       set_fact:
         template_id_list: "{{ template_git_list |
                               community.general.lists_mergeby(template_dnac_list, 'name')
@@ -172,41 +177,43 @@
                               community.general.lists_mergeby(template_diff_list, 'name')
                           }}"
 
-    - name: --DEBUG-- show DNAC Template Project contents
-      when: DEBUG is defined
+    - name: --DEBUG-- show Cisco Catalyst Center Template Project contents
+      when: DEBUG
       debug:
         msg: "{{ template_project }}"
 
     - name: --DEBUG-- show project id
-      when: DEBUG is defined
+      when: DEBUG
       debug:
         msg: "{{ template_project_id }}"
 
     - name: --DEBUG-- show existing template list
-      when: DEBUG is defined
+      when: DEBUG
       debug:
         msg: "{{ template_dnac_list }}"
 
     - name: --DEBUG-- show template id list 
-      when: DEBUG is defined
+      when: DEBUG
       debug:
         msg: "{{ template_id_list }}"
 
 
-    - name: Get template payload from DNAC
+    - name: Get template payload from Cisco Catalyst Center
+      when: item.composite is not defined or item.composite == false
       cisco.dnac.configuration_template:
-        dnac_host: "{{dnac_host}}"
-        dnac_username: "{{dnac_username}}"
-        dnac_password: "{{dnac_password}}"
-        dnac_verify: "{{dnac_verify}}"
-        dnac_port: "{{dnac_port}}"
-        dnac_version: "{{dnac_version}}"
-        dnac_debug: "{{dnac_debug}}"
+        dnac_host: "{{ dnac_host }}"
+        dnac_username: "{{ dnac_username }}"
+        dnac_password: "{{ dnac_password }}"
+        dnac_verify: "{{ dnac_verify }}"
+        dnac_port: "{{ dnac_port }}"
+        dnac_version: "{{ dnac_version }}"
+        dnac_debug: "{{ dnac_debug }}"
         templateId: "{{ item.id }}"
       with_items: "{{ template_dnac_list }}"
       register: template_dnac_content
 
     - name: Set template template contents list
+      when: item.dnac_response is defined and item.dnac_response.templateContent is defined
       set_fact:  
         template_dnac_content_list: "{{ template_dnac_content_list|default([]) + [ {'dnac_template_content': item.dnac_response.templateContent,
                                                                                     'name': item.dnac_response.name,
@@ -214,69 +221,69 @@
                                       }}"
       with_items: "{{ template_dnac_content.results }}"
 
-    - name: Merge template id + dnac existing payload >> id
+    - name: Merge template id + Catalyst Center existing payload >> id
       when: template_dnac_content_list is defined
       set_fact:
         template_id_list: "{{ template_id_list |
                               community.general.lists_mergeby(template_dnac_content_list, 'name')
                             }}"
 
-    - name: Create new templates in DNAC
-      when: item.id == ''
+    - name: Create new templates in Cisco Catalyst Center
+      when: (item.composite is not defined or item.composite == false) and item.id == ''
       cisco.dnac.configuration_template_create:
-        dnac_host: "{{dnac_host}}"
-        dnac_username: "{{dnac_username}}"
-        dnac_password: "{{dnac_password}}"
-        dnac_verify: "{{dnac_verify}}"
-        dnac_port: "{{dnac_port}}"
-        dnac_version: "{{dnac_version}}"
-        dnac_debug: "{{dnac_debug}}"
+        dnac_host: "{{ dnac_host }}"
+        dnac_username: "{{ dnac_username }}"
+        dnac_password: "{{ dnac_password }}"
+        dnac_verify: "{{ dnac_verify }}"
+        dnac_port: "{{ dnac_port }}"
+        dnac_version: "{{ dnac_version }}"
+        dnac_debug: "{{ dnac_debug }}"
         author: "{{ dnac_username }}"
         composite: false
         description: "description"
         deviceTypes:
-        - productFamily: "Routers"
+        - productFamily: "{{ item.productFamily | default(DEFAULT_PRODUCT_FAMILY) }}"
         language: "{{ item.language }}"
         name: "{{ item.name }}"
         projectId: "{{ template_project_id }}"
-        softwareType: "IOS-XE"
+        softwareType: "{{ item.softwareType | default(DEFAULT_SOFTWARE_TYPE) }}"
         templateContent: "{{ item.diff_msg + item.payload }}"
         version: "1.0"
       with_items: "{{ template_id_list }}"
 
-    - name: Update existing templates in DNAC
-      when: item.id != '' and item.diff_msg + item.payload != item.dnac_template_content
+    - name: Update existing templates in Cisco Catalyst Center
+      when: (item.composite is not defined or item.composite == false) and item.id != '' and item.diff_msg + item.payload != item.dnac_template_content
       cisco.dnac.configuration_template:
-        dnac_host: "{{dnac_host}}"
-        dnac_username: "{{dnac_username}}"
-        dnac_password: "{{dnac_password}}"
-        dnac_verify: "{{dnac_verify}}"
-        dnac_port: "{{dnac_port}}"
-        dnac_version: "{{dnac_version}}"
-        dnac_debug: "{{dnac_debug}}"
+        dnac_host: "{{ dnac_host }}"
+        dnac_username: "{{ dnac_username }}"
+        dnac_password: "{{ dnac_password }}"
+        dnac_verify: "{{ dnac_verify }}"
+        dnac_port: "{{ dnac_port }}"
+        dnac_version: "{{ dnac_version }}"
+        dnac_debug: "{{ dnac_debug }}"
         author: "{{ dnac_username }}"
         composite: false
         description: "description"
         deviceTypes:
-        - productFamily: "Routers"
+        - productFamily: "{{ item.productFamily | default(DEFAULT_PRODUCT_FAMILY) }}"
         name: "{{ item.name }}"
         id: "{{ item.id }}"
         language: "{{ item.language }}"
         projectId: "{{ template_project_id }}"
-        softwareType: "IOS-XE"
+        softwareType: "{{ item.softwareType | default(DEFAULT_SOFTWARE_TYPE) }}"
         templateContent: "{{ item.diff_msg + item.payload }}"
       with_items: "{{ template_id_list }}"
 
-    - name: Collecting renewed template list from DNAC
+    - name: Collecting renewed template list from Cisco Catalyst Center
       cisco.dnac.configuration_template_project_info:
-        dnac_host: "{{dnac_host}}"
-        dnac_username: "{{dnac_username}}"
-        dnac_password: "{{dnac_password}}"
-        dnac_verify: "{{dnac_verify}}"
-        dnac_port: "{{dnac_port}}"
-        dnac_version: "{{dnac_version}}"
-        dnac_debug: "{{dnac_debug}}"
-        name: "{{projectName}}"
+        dnac_host: "{{ dnac_host }}"
+        dnac_username: "{{ dnac_username }}"
+        dnac_password: "{{ dnac_password }}"
+        dnac_verify: "{{ dnac_verify }}"
+        dnac_port: "{{ dnac_port }}"
+        dnac_version: "{{ dnac_version }}"
+        dnac_debug: "{{ dnac_debug }}"
+        name: "{{ projectName }}"
       register: template_project_name
 
     - name: Set existing templates list
@@ -296,21 +303,213 @@
                           }}"
 
     - name: --DEBUG-- show refreshed template list
-      when: DEBUG is defined
+      when: DEBUG
       debug:
         msg: "{{ template_id_list }}"
 
-    - name: Version DNAC templates
-      when: item.id != '' and (item.dnac_template_content is not defined or item.diff_msg + item.payload != item.dnac_template_content)
+    - name: Version Cisco Catalyst Center templates
+      when: (item.composite is not defined or item.composite == false) and item.id != '' and (item.dnac_template_content is not defined or item.diff_msg + item.payload != item.dnac_template_content)
       cisco.dnac.configuration_template_version_create:
-        dnac_host: "{{dnac_host}}"
-        dnac_username: "{{dnac_username}}"
-        dnac_password: "{{dnac_password}}"
-        dnac_verify: "{{dnac_verify}}"
-        dnac_port: "{{dnac_port}}"
-        dnac_version: "{{dnac_version}}"
-        dnac_debug: "{{dnac_debug}}"
-        comments: "{{ (item.commit_msg)[:DNAC_TEMPLATE_SUMMARY_MAXCHAR] }}"
+        dnac_host: "{{ dnac_host }}"
+        dnac_username: "{{ dnac_username }}"
+        dnac_password: "{{ dnac_password }}"
+        dnac_verify: "{{ dnac_verify }}"
+        dnac_port: "{{ dnac_port }}"
+        dnac_version: "{{ dnac_version }}"
+        dnac_debug: "{{ dnac_debug }}"
+        comments: "{{ (item.commit_msg)[:CATC_TEMPLATE_SUMMARY_MAXCHAR] }}"
         templateId: "{{ item.id }}"
       with_items: "{{ template_id_list }}"
-  
+
+    # ============================================================
+    # COMPOSITE TEMPLATE SYNC SECTION
+    # Looks for .yml composite definition files inside the synced git repo
+    # ============================================================
+
+    - name: Find composite definition YAML files in synced repo
+      find:
+        paths: "{{ git_local_dest }}"
+        patterns: "*.yml"
+        file_type: file
+        recurse: yes
+      register: composite_definition_files
+
+    - name: --DEBUG-- show composite definition files
+      when: DEBUG
+      debug:
+        msg: "{{ composite_definition_files.files | default([]) }}"
+
+    - name: Load composite template definitions
+      when: composite_definition_files.files | length > 0
+      set_fact:
+        composite_definitions: "{{ composite_definitions | default([]) + [
+          {
+            'name': (lookup('file', item.path) | from_yaml).composite_name | default((item.path | basename | regex_replace('\\.yml$', '.j2'))),
+            'definition_path': item.path,
+            'template_names': (lookup('file', item.path) | from_yaml).templates | map(attribute='name') | list
+          }
+        ] }}"
+      with_items: "{{ composite_definition_files.files }}"
+
+    - name: --DEBUG-- show composite definitions
+      when: DEBUG and composite_definitions is defined
+      debug:
+        msg: "{{ composite_definitions }}"
+
+    - name: Build template ID lookup map
+      when: composite_definitions is defined
+      set_fact:
+        template_id_map: "{{ dict(template_dnac_list | map(attribute='name') | zip(template_dnac_list | map(attribute='id'))) }}"
+
+    - name: Validate all referenced templates exist in Cisco Catalyst Center
+      when: composite_definitions is defined
+      set_fact:
+        missing_templates: "{{ (composite_definitions | map(attribute='template_names') | flatten | unique) | difference(template_id_map.keys() | list) }}"
+
+    - name: --DEBUG-- show missing templates
+      when: DEBUG and missing_templates is defined and missing_templates | length > 0
+      debug:
+        msg: "WARNING: Missing templates in Cisco Catalyst Center: {{ missing_templates }}"
+
+    - name: Build composite API list
+      when: composite_definitions is defined
+      set_fact:
+        composite_api_list: []
+
+    - name: Prepare composite templates for API calls
+      when: composite_definitions is defined
+      set_fact:
+        composite_api_list: "{{ composite_api_list + [
+          {
+            'name': item.name,
+            'existing_id': (template_dnac_list | selectattr('name', 'equalto', item.name) | map(attribute='id') | list | first | default('')),
+            'is_new': (template_dnac_list | selectattr('name', 'equalto', item.name) | list | length == 0),
+            'containingTemplates': item.template_names | map('community.general.dict_kv', 'name') | 
+                                   list | map('combine', {'composite': false}) | list
+          }
+        ] }}"
+      with_items: "{{ composite_definitions }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: --DEBUG-- show composite API list before ID resolution
+      when: DEBUG and composite_api_list is defined
+      debug:
+        msg: "{{ composite_api_list }}"
+
+    - name: Resolve template IDs in containingTemplates
+      when: composite_api_list is defined
+      set_fact:
+        composite_ready_list: []
+
+    - name: Build containingTemplates with resolved IDs
+      when: composite_api_list is defined
+      set_fact:
+        composite_ready_list: "{{ composite_ready_list + [
+          item | combine({
+            'containingTemplates': resolved_containing
+          })
+        ] }}"
+      vars:
+        resolved_containing: "{{ item.containingTemplates | map('combine', 
+          {'id': template_id_map[item_tpl.name] | default('')} if item_tpl is defined else {}) | list }}"
+      with_items: "{{ composite_api_list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      ignore_errors: yes
+
+    - name: Build final containingTemplates with IDs via loop
+      when: composite_api_list is defined
+      set_fact:
+        composite_final_list: []
+
+    - name: Process each composite template
+      when: composite_api_list is defined
+      include_tasks: composite-resolve-ids.yml
+      with_items: "{{ composite_api_list }}"
+      loop_control:
+        loop_var: composite_item
+        label: "{{ composite_item.name }}"
+
+    - name: --DEBUG-- show composite final list
+      when: DEBUG and composite_final_list is defined
+      debug:
+        msg: "{{ composite_final_list }}"
+
+    - name: Create new composite templates
+      when: >
+        composite_final_list is defined and 
+        item.is_new and
+        (item.containingTemplates | selectattr('id', 'equalto', '') | list | length == 0)
+      cisco.dnac.configuration_template_create:
+        dnac_host: "{{ dnac_host }}"
+        dnac_username: "{{ dnac_username }}"
+        dnac_password: "{{ dnac_password }}"
+        dnac_verify: "{{ dnac_verify }}"
+        dnac_port: "{{ dnac_port }}"
+        dnac_version: "{{ dnac_version }}"
+        dnac_debug: "{{ dnac_debug }}"
+        author: "{{ dnac_username }}"
+        composite: true
+        description: "Composite template synced from Git helper"
+        deviceTypes:
+        - productFamily: "{{ DEFAULT_PRODUCT_FAMILY }}"
+        language: "JINJA"
+        name: "{{ item.name }}"
+        projectId: "{{ template_project_id }}"
+        softwareType: "IOS-XE"
+        templateParams: []
+        tags: []
+        containingTemplates: "{{ item.containingTemplates }}"
+      with_items: "{{ composite_final_list }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Update existing composite templates
+      when: >
+        composite_final_list is defined and 
+        not item.is_new and
+        (item.containingTemplates | selectattr('id', 'equalto', '') | list | length == 0)
+      cisco.dnac.configuration_template:
+        dnac_host: "{{ dnac_host }}"
+        dnac_username: "{{ dnac_username }}"
+        dnac_password: "{{ dnac_password }}"
+        dnac_verify: "{{ dnac_verify }}"
+        dnac_port: "{{ dnac_port }}"
+        dnac_version: "{{ dnac_version }}"
+        dnac_debug: "{{ dnac_debug }}"
+        author: "{{ dnac_username }}"
+        composite: true
+        description: "Composite template synced from Git helper"
+        deviceTypes:
+        - productFamily: "{{ DEFAULT_PRODUCT_FAMILY }}"
+        id: "{{ item.existing_id }}"
+        language: "JINJA"
+        name: "{{ item.name }}"
+        projectId: "{{ template_project_id }}"
+        softwareType: "IOS-XE"
+        templateParams: []
+        tags: []
+        containingTemplates: "{{ item.containingTemplates }}"
+      with_items: "{{ composite_final_list }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Version updated composite templates
+      when: >
+        composite_final_list is defined and 
+        not item.is_new and
+        (item.containingTemplates | selectattr('id', 'equalto', '') | list | length == 0)
+      cisco.dnac.configuration_template_version_create:
+        dnac_host: "{{ dnac_host }}"
+        dnac_username: "{{ dnac_username }}"
+        dnac_password: "{{ dnac_password }}"
+        dnac_verify: "{{ dnac_verify }}"
+        dnac_port: "{{ dnac_port }}"
+        dnac_version: "{{ dnac_version }}"
+        dnac_debug: "{{ dnac_debug }}"
+        comments: "Composite template updated via GitOps sync"
+        templateId: "{{ item.existing_id }}"
+      with_items: "{{ composite_final_list }}"
+      loop_control:
+        label: "{{ item.name }}"

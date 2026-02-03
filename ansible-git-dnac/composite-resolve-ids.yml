@@ -1,0 +1,39 @@
+---
+# composite-resolve-ids.yml
+# Resolves template IDs for containingTemplates in a composite template definition
+# Structure based on Catalyst Center composite template export format
+
+- name: Build resolved containingTemplates for {{ composite_item.name }}
+  set_fact:
+    resolved_templates: []
+
+- name: Resolve each template ID in {{ composite_item.name }}
+  set_fact:
+    resolved_templates: "{{ resolved_templates + [
+      {
+        'name': tpl_item.name,
+        'id': template_id_map[tpl_item.name] | default(''),
+        'composite': false,
+        'language': 'JINJA',
+        'description': 'description',
+        'projectName': projectName,
+        'deviceTypes': [{'productFamily': DEFAULT_PRODUCT_FAMILY}],
+        'templateParams': [],
+        'tags': []
+      }
+    ] }}"
+  with_items: "{{ composite_item.containingTemplates }}"
+  loop_control:
+    loop_var: tpl_item
+    label: "{{ tpl_item.name }}"
+
+- name: Add composite to final list
+  set_fact:
+    composite_final_list: "{{ composite_final_list + [
+      {
+        'name': composite_item.name,
+        'existing_id': composite_item.existing_id,
+        'is_new': composite_item.is_new,
+        'containingTemplates': resolved_templates
+      }
+    ] }}"

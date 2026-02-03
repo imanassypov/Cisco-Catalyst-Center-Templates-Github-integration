@@ -1,0 +1,5 @@
+# Python dependencies for ansible-git-dnac
+# Compatible with Cisco Catalyst Center version 2.3.7.9
+
+dnacentersdk==2.8.6
+ansible>=2.15
