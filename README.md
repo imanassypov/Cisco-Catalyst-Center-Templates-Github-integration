@@ -207,7 +207,7 @@ The screenshot below demonstrates the playbook's capabilities:
 - Automatically generated comment headers reflecting the Git diff from the previous version
 - Template versioning with commit messages in human-readable format
 
-[![Sample Run](https://github.com/imanassypov/ansible-git-dnac/blob/main/sample_run.png)](https://github.com/imanassypov/ansible-git-dnac/blob/main/sample_run.png)
+[![Sample Run](https://github.com/imanassypov/Cisco-Catalyst-Center-Templates-Github-integration/blob/main/sample_run.png)](https://github.com/imanassypov/Cisco-Catalyst-Center-Templates-Github-integration/blob/main/sample_run.png)
 
 ## References
 
