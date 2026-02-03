@@ -10,6 +10,8 @@
     DEBUG: "{{ lookup('env', 'DEBUG') | default(false) | bool }}"
     # Cisco Catalyst Center Template Summary field is length-limited to 1024 chars
     CATC_TEMPLATE_SUMMARY_MAXCHAR: 1024
+    # Include Git diff header as Jinja comment at top of template content
+    INCLUDE_DIFF_HEADER: false
     # Default device targeting (can be overridden per-template via hint comment)
     # Hint format in template: {## CATC: productFamily=Switches and Hubs, softwareType=IOS-XE ##}
     DEFAULT_PRODUCT_FAMILY: "Switches and Hubs"
@@ -227,12 +229,12 @@
         name: "{{ item.name }}"
         projectId: "{{ template_project_id }}"
         softwareType: "{{ item.softwareType | default(DEFAULT_SOFTWARE_TYPE) }}"
-        templateContent: "{{ item.diff_msg + item.payload }}"
+        templateContent: "{{ (item.diff_msg if INCLUDE_DIFF_HEADER else '') + item.payload }}"
         version: "1.0"
       with_items: "{{ template_id_list }}"
 
     - name: Update existing templates in Cisco Catalyst Center
-      when: (item.composite is not defined or item.composite == false) and item.id != '' and item.diff_msg + item.payload != item.dnac_template_content
+      when: (item.composite is not defined or item.composite == false) and item.id != '' and (item.diff_msg if INCLUDE_DIFF_HEADER else '') + item.payload != item.dnac_template_content
       cisco.dnac.configuration_template:
         author: "{{ dnac_username }}"
         composite: false
@@ -244,7 +246,7 @@
         language: "{{ item.language }}"
         projectId: "{{ template_project_id }}"
         softwareType: "{{ item.softwareType | default(DEFAULT_SOFTWARE_TYPE) }}"
-        templateContent: "{{ item.diff_msg + item.payload }}"
+        templateContent: "{{ (item.diff_msg if INCLUDE_DIFF_HEADER else '') + item.payload }}"
       with_items: "{{ template_id_list }}"
 
     - name: Collecting renewed template list from Cisco Catalyst Center
@@ -274,7 +276,7 @@
         msg: "{{ template_id_list }}"
 
     - name: Version Cisco Catalyst Center templates
-      when: (item.composite is not defined or item.composite == false) and item.id != '' and (item.dnac_template_content is not defined or item.diff_msg + item.payload != item.dnac_template_content)
+      when: (item.composite is not defined or item.composite == false) and item.id != '' and (item.dnac_template_content is not defined or (item.diff_msg if INCLUDE_DIFF_HEADER else '') + item.payload != item.dnac_template_content)
       cisco.dnac.configuration_template_version_create:
         comments: "{{ (item.commit_msg)[:CATC_TEMPLATE_SUMMARY_MAXCHAR] }}"
         templateId: "{{ item.id }}"

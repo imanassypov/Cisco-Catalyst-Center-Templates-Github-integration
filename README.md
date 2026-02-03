@@ -34,6 +34,25 @@ Templates can specify their target device type using an optional hint comment at
 
 When no hint is present, templates default to `Switches and Hubs` with `IOS-XE`. Default values can be customized in the playbook variables (`DEFAULT_PRODUCT_FAMILY`, `DEFAULT_SOFTWARE_TYPE`).
 
+## Git Diff Header
+
+The playbook can optionally prepend Git diff information as Jinja comments at the top of each template. This provides traceability by showing the commit hash and changes from the previous version.
+
+**Example diff header:**
+```jinja
+{## a1b2c3d4 ##}
+{## diff --git a/FABRIC-VRF.j2 b/FABRIC-VRF.j2 ##}
+{## @@ -1,5 +1,6 @@ ##}
+{## +new line added ##}
+```
+
+**Configuration:** Set `INCLUDE_DIFF_HEADER` in the playbook vars:
+
+| Value | Behavior |
+|-------|----------|
+| `false` (default) | Template content only, no diff header |
+| `true` | Prepend Git diff as Jinja comments |
+
 ---
 
 ## Composite Template Synchronization
