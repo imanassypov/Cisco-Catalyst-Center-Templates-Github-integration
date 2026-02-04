@@ -24,15 +24,22 @@ When changes are committed to the Git repository and the playbook is executed, t
 Templates can specify their target device type using an optional hint comment at the beginning of the `.j2` file:
 
 ```jinja
-{## CATC: productFamily=Switches and Hubs, softwareType=IOS-XE ##}
+{## CATC: productFamily=Switches and Hubs, softwareType=IOS-XE, deviceType=Cisco Catalyst 9300 Switch ##}
 ```
 
 | Parameter | Default Value | Supported Values |
 |-----------|---------------|------------------|
 | `productFamily` | `Switches and Hubs` | `Routers`, `Switches and Hubs`, `Wireless Controller` |
 | `softwareType` | `IOS-XE` | `IOS-XE`, `IOS`, `NX-OS` |
+| `deviceType` | *(see below)* | `Cisco Catalyst 9300 Switch`, `Cisco Catalyst 9500 Switch`, `Cisco ASR 1000 Series`, etc. |
 
-When no hint is present, templates default to `Switches and Hubs` with `IOS-XE`. Default values can be customized in the playbook variables (`DEFAULT_PRODUCT_FAMILY`, `DEFAULT_SOFTWARE_TYPE`).
+**Default Device Types:** When no `deviceType` hint is specified, templates target:
+- Cisco Catalyst 9000 Series Virtual Switches
+- Cisco Catalyst 9300 Series Switches
+- Cisco Catalyst 9400 Series Switches
+- Cisco Catalyst 9500 Series Switches
+
+Default values can be customized in the playbook variables (`DEFAULT_PRODUCT_FAMILY`, `DEFAULT_SOFTWARE_TYPE`, `DEFAULT_DEVICE_TYPES`).
 
 ## Git Diff Header
 
