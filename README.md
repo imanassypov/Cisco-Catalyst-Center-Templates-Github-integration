@@ -10,6 +10,27 @@ Automate the synchronization of Jinja2 templates between a Git repository and Ci
 - Synchronizes template content to Cisco Catalyst Center Template Projects
 - Automatically adds Git commit messages to template version descriptions
 - Embeds Git diff information as Jinja comments in template payloads for traceability
+- **NEW**: Updated playbook using `cisco.dnac.template_workflow_manager` for streamlined template management
+- **NEW**: Ansible inventory-based configuration for better organization and multi-environment support
+
+## Refactored Architecture
+
+The updated playbook (`ansible-git-catc.yml`) introduces several improvements:
+
+### Benefits of Template Workflow Manager
+
+- **Simplified Configuration**: Uses declarative configuration model instead of imperative API calls
+- **Idempotent Operations**: Automatically handles create/update logic based on template existence
+- **Batch Processing**: More efficient handling of multiple templates
+- **Better Error Handling**: Improved error messages and validation
+- **State Management**: Built-in state tracking (merged, deleted, etc.)
+
+### Inventory-Based Configuration
+
+- **Centralized Settings**: All connection parameters and configuration in `inventory.yml`
+- **Multi-Environment Support**: Easy to manage dev/test/prod environments with separate inventory files
+- **Variable Inheritance**: Leverage Ansible's inventory variable precedence
+- **Better Security**: Credentials separated in vault file, configuration in inventory
 
 ## Sample Repository
 
@@ -33,13 +54,25 @@ Templates can specify their target device type using an optional hint comment at
 | `softwareType` | `IOS-XE` | `IOS-XE`, `IOS`, `NX-OS` |
 | `deviceType` | *(see below)* | `Cisco Catalyst 9300 Switch`, `Cisco Catalyst 9500 Switch`, `Cisco ASR 1000 Series`, etc. |
 
-**Default Device Types:** When no `deviceType` hint is specified, templates target:
+**Default Device Types:** When no `deviceType` hint is specified, templates target multiple device series:
+- Cisco Catalyst 9500 Series Switches
 - Cisco Catalyst 9000 Series Virtual Switches
 - Cisco Catalyst 9300 Series Switches
 - Cisco Catalyst 9400 Series Switches
-- Cisco Catalyst 9500 Series Switches
 
-Default values can be customized in the playbook variables (`DEFAULT_PRODUCT_FAMILY`, `DEFAULT_SOFTWARE_TYPE`, `DEFAULT_DEVICE_TYPES`).
+Default values can be customized in the inventory file (`default_device_types`, `default_software_type`). The updated playbook supports multiple device types per template:
+
+```yaml
+default_device_types:
+  - product_family: "Switches and Hubs"
+    product_series: "Cisco Catalyst 9500 Series Switches"
+  - product_family: "Switches and Hubs"
+    product_series: "Cisco Catalyst 9000 Series Virtual Switches"
+  - product_family: "Switches and Hubs"
+    product_series: "Cisco Catalyst 9300 Series Switches"
+  - product_family: "Switches and Hubs"
+    product_series: "Cisco Catalyst 9400 Series Switches"
+```
 
 ## Git Diff Header
 
@@ -236,33 +269,51 @@ ansible-galaxy collection install -r requirements.yml
 
 ### Configuration
 
-1. Update `credentials.yml` with your Cisco Catalyst Center host and connection settings
-2. Create `vault.yml` with your credentials and encrypt it:
+#### 1. Configure Ansible Inventory
 
-   ```bash
-   ansible-vault encrypt ansible-git-catc/vault.yml
-   ```
+Update `ansible-git-catc/inventory.yml` with your Cisco Catalyst Center host and Git repository settings:
+
+```yaml
+all:
+  hosts:
+    catalyst_center:
+      ansible_host: your-dnac-host.example.com
+      dnac_host: your-dnac-host.example.com
+      dnac_port: 443
+      dnac_version: 2.3.7.6
+      git_repo: "https://github.com/your-org/your-template-repo.git"
+      git_branch: "main"
+```
+
+#### 2. Configure Credentials
+
+Create `vault.yml` from the example template and add your credentials:
+
+```bash
+cp ansible-git-catc/vault.yml.example ansible-git-catc/vault.yml
+# Edit vault.yml with your credentials
+ansible-vault encrypt ansible-git-catc/vault.yml
+```
 
 ## Usage
 
-Run the playbook with a vault password file:
+### Using the Updated Playbook
 
 ```bash
-ansible-playbook ansible-git-catc/ansible-git-catc.yml --vault-password-file .vault_pass
+ansible-playbook -i ansible-git-catc/inventory.yml ansible-git-catc/ansible-git-catc.yml --vault-password-file .vault_pass
 ```
 
 Alternatively, use an interactive vault password prompt:
 
 ```bash
-ansible-playbook ansible-git-catc/ansible-git-catc.yml --ask-vault-pass
+ansible-playbook -i ansible-git-catc/inventory.yml ansible-git-catc/ansible-git-catc.yml --ask-vault-pass
 ```
 
 Enable debug mode for verbose output:
 
 ```bash
-DEBUG=true ansible-playbook ansible-git-catc/ansible-git-catc.yml --vault-password-file .vault_pass
+DEBUG=true ansible-playbook -i ansible-git-catc/inventory.yml ansible-git-catc/ansible-git-catc.yaml --vault-password-file .vault_pass
 ```
-
 ## Example Output
 
 The screenshot below demonstrates the playbook's capabilities:
