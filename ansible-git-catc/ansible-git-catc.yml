@@ -49,7 +49,7 @@
 
     - name: Get Project name from template folder
       set_fact:
-        projectName: "{{ template_file_list.files[0].path | dirname | basename }}"
+        projectName: "{{ projectName | default(template_file_list.files[0].path | dirname | basename) }}"
 
     - name: --DEBUG-- Project Name
       when: DEBUG
@@ -72,75 +72,52 @@
       register: template_git_diff
       changed_when: false
 
-    # CRITICAL: Template Processing Order
-    # Catalyst Center requires templates to be created in a specific order to avoid dependency errors.
+    # DYNAMIC TEMPLATE PROCESSING ORDER
+    # Instead of a static template_order dictionary, the playbook dynamically determines
+    # template processing order based on composite template definitions:
     # 
-    # Definition Templates (DEFN-*):
-    #   These templates define data structures and are included by FABRIC-* templates.
-    #   They must be created first in this order:
-    #   1. DEFN-MCAST: Multicast definitions for EVPN fabric
-    #   2. DEFN-VRF: VRF definitions for multi-tenancy (red, blue, green)
-    #   3. DEFN-ROLES: Device role definitions (spine/leaf/border nodes)
-    #   4. DEFN-LOOPBACKS: Loopback interface definitions for underlay/overlay
-    #   5. DEFN-VNIOFFSETS: VNI offset definitions for L2 and L3 VNIs
-    #   6. DEFN-OVERLAY: Overlay network definitions with VLANs and SVIs
-    #   7. DEFN-L3OUT: Layer 3 external connectivity definitions
-    #   8. DEFN-NAC-IOT: NAC IoT definitions
-    #   9. DEFN-IPSEC: IPSec tunnel definitions for multi-cluster
+    # 1. Find all composite definition YAML files (.yml) in the repository
+    # 2. Extract templates referenced in those composites (these are dependencies)
+    # 3. Process priority templates first (templates referenced in composites)
+    # 4. Process regular templates second (templates not referenced in composites)
+    # 5. Process composite templates last (after all dependencies exist in Catalyst Center)
     #
-    # Function Templates (FUNC-*):
-    #   10. FUNC-OBJECT-MACROS: Jinja2 macros for VRF object resolution
-    #
-    # Fabric Templates (FABRIC-*):
-    #   These templates generate device configurations and must be created after DEFN-* templates:
-    #   11. FABRIC-VRF: VRF configuration for multi-tenancy
-    #   12. FABRIC-LOOPBACKS: Loopback interface configuration
-    #   13. FABRIC-NVE: Network Virtualization Edge (NVE) interface configuration
-    #   14. FABRIC-MCAST: Multicast configuration for BUM traffic
-    #   15. FABRIC-EVPN: BGP EVPN control plane configuration
-    #   16. FABRIC-OVERLAY: VXLAN overlay network services
-    #   17. FABRIC-IPSEC: IPSec tunnel configuration
-    #   18. FABRIC-NAC-IOT: Network Access Control for IoT
-    #   19. FABRIC-L3OUT: Layer 3 external connectivity configuration
-    #
-    # Composite Template:
-    #   BGP-EVPN-BUILD: Combines FABRIC-* templates in the correct order (created after all individual templates)
-    
-    - name: Define template processing order
-      set_fact:
-        template_order:
-          DEFN-MCAST.j2: 1
-          DEFN-VRF.j2: 2
-          DEFN-ROLES.j2: 3
-          DEFN-LOOPBACKS.j2: 4
-          DEFN-VNIOFFSETS.j2: 5
-          DEFN-OVERLAY.j2: 6
-          DEFN-L3OUT.j2: 7
-          DEFN-NAC-IOT.j2: 8
-          DEFN-IPSEC.j2: 9
-          FUNC-OBJECT-MACROS.j2: 10
-          FABRIC-VRF.j2: 11
-          FABRIC-LOOPBACKS.j2: 12
-          FABRIC-NVE.j2: 13
-          FABRIC-MCAST.j2: 14
-          FABRIC-EVPN.j2: 15
-          FABRIC-OVERLAY.j2: 16
-          FABRIC-IPSEC.j2: 17
-          FABRIC-NAC-IOT.j2: 18
-          FABRIC-L3OUT.j2: 19
+    # This approach ensures templates are created in the correct dependency order without
+    # maintaining a hard-coded list, making the playbook more flexible and maintainable.
 
-    - name: Initialize templates with sort keys
-      set_fact:
-        templates_with_keys: []
+    - name: Find composite definition YAML files in synced repo
+      find:
+        paths: "{{ git_local_dest }}"
+        patterns: "*.yml"
+        file_type: file
+        recurse: yes
+      register: composite_definition_files
 
-    - name: Add sort key to each template file
+    - name: Extract templates referenced in composite definitions
       set_fact:
-        templates_with_keys: "{{ templates_with_keys + [item | combine({'sort_key': template_order[item.path | basename] | default(9999)})] }}"
+        composite_referenced_templates: "{{ composite_referenced_templates | default([]) + (lookup('file', item.path) | from_yaml).templates | map(attribute='name') | list }}"
+      with_items: "{{ composite_definition_files.files }}"
+      when: composite_definition_files.files | length > 0
+
+    - name: --DEBUG-- Templates referenced in composites
+      when: DEBUG and composite_referenced_templates is defined
+      debug:
+        msg: "{{ composite_referenced_templates }}"
+
+    - name: Separate templates into priority and regular lists
+      set_fact:
+        priority_template_list: []
+        regular_template_list: []
+
+    - name: Build template lists based on composite references
+      set_fact:
+        priority_template_list: "{{ priority_template_list + [item] if (composite_referenced_templates is defined and item.path | basename in composite_referenced_templates) else priority_template_list }}"
+        regular_template_list: "{{ regular_template_list + [item] if (composite_referenced_templates is not defined or item.path | basename not in composite_referenced_templates) else regular_template_list }}"
       loop: "{{ template_file_list.files }}"
 
-    - name: Sort templates by defined order
+    - name: Set template processing order (priority first, then regular)
       set_fact:
-        sorted_template_files: "{{ templates_with_keys | sort(attribute='sort_key') }}"
+        sorted_template_files: "{{ priority_template_list + regular_template_list }}"
 
     - name: --DEBUG-- show sorted template list
       when: DEBUG
@@ -158,14 +135,6 @@
       when: DEBUG
       debug:
         msg: "{{ template_workflow_configs }}"
-
-    - name: Find composite definition YAML files in synced repo
-      find:
-        paths: "{{ git_local_dest }}"
-        patterns: "*.yml"
-        file_type: file
-        recurse: yes
-      register: composite_definition_files
 
     - name: Process composite templates
       when: composite_definition_files.files | length > 0

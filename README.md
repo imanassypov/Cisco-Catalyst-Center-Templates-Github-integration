@@ -12,6 +12,7 @@ Automate the synchronization of Jinja2 templates between a Git repository and Ci
 - Embeds Git diff information as Jinja comments in template payloads for traceability
 - **NEW**: Updated playbook using `cisco.dnac.template_workflow_manager` for streamlined template management
 - **NEW**: Ansible inventory-based configuration for better organization and multi-environment support
+- **NEW**: Dynamic template ordering based on composite definitions (no static ordering required)
 
 ## Refactored Architecture
 
@@ -25,6 +26,13 @@ The updated playbook (`ansible-git-catc.yml`) introduces several improvements:
 - **Better Error Handling**: Improved error messages and validation
 - **State Management**: Built-in state tracking (merged, deleted, etc.)
 
+### Dynamic Template Ordering
+
+- **No Static Lists**: Template processing order determined automatically from composite definitions
+- **Dependency-Driven**: Templates referenced in composites are prioritized automatically
+- **Flexible**: Works with any repository structure without configuration changes
+- **Maintainable**: Add/remove templates without updating playbook code
+
 ### Inventory-Based Configuration
 
 - **Centralized Settings**: All connection parameters and configuration in `inventory.yml`
@@ -37,6 +45,8 @@ The updated playbook (`ansible-git-catc.yml`) introduces several improvements:
 A sample template repository is available for reference:  
 **Repository:** [CatalystCenter-BGP-EVPN-VXLAN](https://github.com/imanassypov/CatalystCenter-BGP-EVPN-VXLAN)  
 **Branch:** `composite-template`
+
+> **Note:** This is an example implementation. The playbook works with any Git repository containing Jinja2 templates.
 
 When changes are committed to the Git repository and the playbook is executed, the updates are automatically synchronized to Cisco Catalyst Center.
 
@@ -81,7 +91,7 @@ The playbook can optionally prepend Git diff information as Jinja comments at th
 **Example diff header:**
 ```jinja
 {## a1b2c3d4 ##}
-{## diff --git a/FABRIC-VRF.j2 b/FABRIC-VRF.j2 ##}
+{## diff --git a/Template-A.j2 b/Template-A.j2 ##}
 {## @@ -1,5 +1,6 @@ ##}
 {## +new line added ##}
 ```
@@ -105,13 +115,13 @@ The playbook supports synchronization of **composite CLI templates** to Cisco Ca
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        Git Repository                                │
 │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐ │
-│  │  FABRIC-VRF.j2  │    │ FABRIC-EVPN.j2  │    │ FABRIC-NVE.j2   │ │
+│  │  Template-A.j2  │    │  Template-B.j2  │    │  Template-C.j2  │ │
 │  └────────┬────────┘    └────────┬────────┘    └────────┬────────┘ │
 │           │                      │                      │          │
 │           └──────────────────────┼──────────────────────┘          │
 │                                  ▼                                  │
 │                    ┌─────────────────────────┐                     │
-│                    │  BGP-EVPN-BUILD.yml     │  ← Definition file  │
+│                    │  COMPOSITE-BUILD.yml    │  ← Definition file  │
 │                    │  (in same folder)       │    inside Git repo  │
 │                    └─────────────────────────┘                     │
 └─────────────────────────────────────────────────────────────────────┘
@@ -120,10 +130,10 @@ The playbook supports synchronization of **composite CLI templates** to Cisco Ca
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    Cisco Catalyst Center                             │
 │  ┌─────────────────────────────────────────────────────────────┐   │
-│  │              Composite Template: BGP-EVPN-BUILD.j2          │   │
+│  │              Composite Template: COMPOSITE-BUILD.j2         │   │
 │  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       │   │
-│  │  │FABRIC-VRF│→│FABRIC-NVE│→│FABRIC-   │→│FABRIC-   │→ ...  │   │
-│  │  │   .j2    │ │   .j2    │ │EVPN.j2   │ │OVERLAY.j2│       │   │
+│  │  │Template-A│→│Template-B│→│Template-C│→│Template-D│→ ...  │   │
+│  │  │   .j2    │ │   .j2    │ │   .j2    │ │   .j2    │       │   │
 │  │  └──────────┘ └──────────┘ └──────────┘ └──────────┘       │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
@@ -134,13 +144,13 @@ The playbook supports synchronization of **composite CLI templates** to Cisco Ca
 Place a YAML definition file alongside your templates in the Git repository. The playbook automatically discovers all `.yml` files in the synchronized repository:
 
 ```
-CatalystCenter-BGP-EVPN-VXLAN/        # Git repository
-└── BGP EVPN/                         # Template folder
-    ├── FABRIC-VRF.j2
-    ├── FABRIC-EVPN.j2
-    ├── FABRIC-NVE.j2
+MyTemplateRepository/                  # Git repository
+└── Templates/                         # Template folder
+    ├── Template-A.j2
+    ├── Template-B.j2
+    ├── Template-C.j2
     ├── ...
-    └── BGP-EVPN-BUILD.yml            # Composite definition → creates BGP-EVPN-BUILD.j2
+    └── COMPOSITE-BUILD.yml            # Composite definition → creates COMPOSITE-BUILD.j2
 ```
 
 **Definition File Format:**
@@ -151,23 +161,21 @@ CatalystCenter-BGP-EVPN-VXLAN/        # Git repository
 
 # Ordered list of templates to include in the composite
 templates:
-  - name: "FABRIC-VRF.j2"
-  - name: "FABRIC-LOOPBACKS.j2"
-  - name: "FABRIC-NVE.j2"
-  - name: "FABRIC-MCAST.j2"
-  - name: "FABRIC-EVPN.j2"
-  - name: "FABRIC-OVERLAY.j2"
-  - name: "FABRIC-IPSEC.j2"
-  - name: "FABRIC-NAC-IOT.j2"
+  - name: "Template-A.j2"
+  - name: "Template-B.j2"
+  - name: "Template-C.j2"
+  - name: "Template-D.j2"
+  - name: "Template-E.j2"
+  - name: "Template-F.j2"
 ```
 
 ### Template Inclusion Guidelines
 
 | Template Type | Include in Composite | Reason |
 |---------------|----------------------|--------|
-| `FABRIC-*.j2` | ✅ Yes | Top-level executable templates |
-| `DEFN-*.j2`   | ❌ No  | Data definitions (included via Jinja2 `{% include %}`) |
-| `FUNC-*.j2`   | ❌ No  | Macro libraries (included via Jinja2 `{% include %}`) |
+| Top-level config templates | ✅ Yes | Executable templates that run independently |
+| Definition files | ❌ No  | Data definitions (included via Jinja2 `{% include %}`) |
+| Macro libraries | ❌ No  | Function libraries (included via Jinja2 `{% include %}`) |
 
 > **Note:** Only include top-level templates that execute independently. Templates referenced via Jinja2 `{% include %}` statements are resolved at render time and should not be added to the composite.
 
@@ -177,12 +185,12 @@ The playbook generates `containingTemplates` structures that conform to the Cisc
 
 ```json
 {
-  "name": "FABRIC-VRF.j2",
+  "name": "Template-A.j2",
   "id": "75ec3be5-7fd4-4110-aaef-071e1b768179",
   "composite": false,
   "language": "JINJA",
   "description": "description",
-  "projectName": "CatalystCenter-BGP-EVPN-VXLAN",
+  "projectName": "MyTemplateProject",
   "deviceTypes": [{"productFamily": "Switches and Hubs"}],
   "templateParams": [],
   "tags": []
@@ -206,26 +214,26 @@ The playbook creates composite template payloads through the following stages:
 2. **Load Definitions** – Parses each YAML file to extract the composite name and ordered template list:
    ```yaml
    composite_definitions: [{
-     'name': 'BGP-EVPN-BUILD.j2',
-     'definition_path': '/path/to/BGP-EVPN-BUILD.yml',
-     'template_names': ['FABRIC-VRF.j2', 'FABRIC-LOOPBACKS.j2', ...]
+     'name': 'COMPOSITE-BUILD.j2',
+     'definition_path': '/path/to/COMPOSITE-BUILD.yml',
+     'template_names': ['Template-A.j2', 'Template-B.j2', ...]
    }]
    ```
 
 3. **Prepare API List** – Builds initial structure with template names and determines if composite exists:
    ```yaml
    composite_api_list: [{
-     'name': 'BGP-EVPN-BUILD.j2',
+     'name': 'COMPOSITE-BUILD.j2',
      'existing_id': '...',  # or '' if new
      'is_new': true/false,
-     'containingTemplates': [{'name': 'FABRIC-VRF.j2', 'composite': false}, ...]
+     'containingTemplates': [{'name': 'Template-A.j2', 'composite': false}, ...]
    }]
    ```
 
 4. **Resolve IDs** – The included `composite-resolve-ids.yml` resolves each template name to its Catalyst Center ID:
    ```yaml
    resolved_templates: [{
-     'name': 'FABRIC-VRF.j2',
+     'name': 'Template-A.j2',
      'id': '75ec3be5-7fd4-4110-aaef-071e1b768179',
      'composite': false,
      'language': 'JINJA',

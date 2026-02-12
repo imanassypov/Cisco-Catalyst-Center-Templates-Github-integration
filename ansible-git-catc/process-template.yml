@@ -9,7 +9,7 @@
     commit_message: "{{ template_git_log.results[template_idx].stdout[:catc_template_summary_maxchar] if template_git_log.results[template_idx].stdout else 'Synced from Git' }}"
     diff_content_raw: "{{ template_git_diff.results[template_idx].stdout | regex_replace('([^\\n]+)', '{## \\1 ##}') + '\\n' if include_diff_header else '' }}"
 
-- name: Wrap template content with raw tags for {{ template_name }}
+- name: Assemble final template content for {{ template_name }}
   set_fact:
     template_content: "{{ diff_content_raw }}{{ template_content_raw }}"
 
@@ -24,7 +24,7 @@
         language: "JINJA"
         template_content: "{{ template_content }}"
         #template_content_file_path: "{{ processed_template_path }}"
-        template_description: "Template synced from Git repository"
+        template_description: "Template synced from Git {{ git_repo }} repository, branch {{ git_branch }}"
         device_types: "{{ default_device_types }}"
         software_type: "{{ default_software_type }}"
         software_variant: "{{ default_software_variant }}"

@@ -20,8 +20,12 @@ all:
 
       # Git Repository Configuration
       git_repo: "https://github.com/imanassypov/CatalystCenter-BGP-EVPN-VXLAN.git"
-      git_branch: "composite-template"
+      git_branch: "main"
       git_local_dest: "{{ playbook_dir }}/../CatC Templates/CatalystCenter-BGP-EVPN-VXLAN"
+
+      # Catalyst Center Project Name
+      # If specified here, it will override the default project name derived from the template file path
+      projectName: "BGP EVPN Site1"
 
       template_extension: "j2"
       
@@ -30,6 +34,11 @@ all:
       default_software_type: "IOS"
       default_software_variant: "XE"
       default_template_version: "1.0"
+      
+      # Device Types: List of device series that can use these templates
+      # Each entry must be a complete object with both product_family and product_series
+      # This structure is required by the Catalyst Center API schema
+      # Repetition of product_family is intentional - allows mixed families (switches + routers)
       default_device_types:
         - product_family: "Switches and Hubs"
           product_series: "Cisco Catalyst 9500 Series Switches"
