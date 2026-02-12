@@ -1,3 +1,4 @@
+.DS_Store
 venv
 dnac_git_templates
 # Ansible Vault secrets
