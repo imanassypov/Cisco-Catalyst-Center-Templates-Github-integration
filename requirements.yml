@@ -3,5 +3,5 @@
 
 collections:
   - name: cisco.dnac
-    version: "6.33.2"
+    version: "6.46.0"
   - name: community.general

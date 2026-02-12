@@ -10,12 +10,43 @@ Automate the synchronization of Jinja2 templates between a Git repository and Ci
 - Synchronizes template content to Cisco Catalyst Center Template Projects
 - Automatically adds Git commit messages to template version descriptions
 - Embeds Git diff information as Jinja comments in template payloads for traceability
+- **NEW**: Updated playbook using `cisco.dnac.template_workflow_manager` for streamlined template management
+- **NEW**: Ansible inventory-based configuration for better organization and multi-environment support
+- **NEW**: Dynamic template ordering based on composite definitions (no static ordering required)
+
+## Refactored Architecture
+
+The updated playbook (`ansible-git-catc.yml`) introduces several improvements:
+
+### Benefits of Template Workflow Manager
+
+- **Simplified Configuration**: Uses declarative configuration model instead of imperative API calls
+- **Idempotent Operations**: Automatically handles create/update logic based on template existence
+- **Batch Processing**: More efficient handling of multiple templates
+- **Better Error Handling**: Improved error messages and validation
+- **State Management**: Built-in state tracking (merged, deleted, etc.)
+
+### Dynamic Template Ordering
+
+- **No Static Lists**: Template processing order determined automatically from composite definitions
+- **Dependency-Driven**: Templates referenced in composites are prioritized automatically
+- **Flexible**: Works with any repository structure without configuration changes
+- **Maintainable**: Add/remove templates without updating playbook code
+
+### Inventory-Based Configuration
+
+- **Centralized Settings**: All connection parameters and configuration in `inventory.yml`
+- **Multi-Environment Support**: Easy to manage dev/test/prod environments with separate inventory files
+- **Variable Inheritance**: Leverage Ansible's inventory variable precedence
+- **Better Security**: Credentials separated in vault file, configuration in inventory
 
 ## Sample Repository
 
 A sample template repository is available for reference:  
 **Repository:** [CatalystCenter-BGP-EVPN-VXLAN](https://github.com/imanassypov/CatalystCenter-BGP-EVPN-VXLAN)  
 **Branch:** `composite-template`
+
+> **Note:** This is an example implementation. The playbook works with any Git repository containing Jinja2 templates.
 
 When changes are committed to the Git repository and the playbook is executed, the updates are automatically synchronized to Cisco Catalyst Center.
 
@@ -33,13 +64,25 @@ Templates can specify their target device type using an optional hint comment at
 | `softwareType` | `IOS-XE` | `IOS-XE`, `IOS`, `NX-OS` |
 | `deviceType` | *(see below)* | `Cisco Catalyst 9300 Switch`, `Cisco Catalyst 9500 Switch`, `Cisco ASR 1000 Series`, etc. |
 
-**Default Device Types:** When no `deviceType` hint is specified, templates target:
+**Default Device Types:** When no `deviceType` hint is specified, templates target multiple device series:
+- Cisco Catalyst 9500 Series Switches
 - Cisco Catalyst 9000 Series Virtual Switches
 - Cisco Catalyst 9300 Series Switches
 - Cisco Catalyst 9400 Series Switches
-- Cisco Catalyst 9500 Series Switches
 
-Default values can be customized in the playbook variables (`DEFAULT_PRODUCT_FAMILY`, `DEFAULT_SOFTWARE_TYPE`, `DEFAULT_DEVICE_TYPES`).
+Default values can be customized in the inventory file (`default_device_types`, `default_software_type`). The updated playbook supports multiple device types per template:
+
+```yaml
+default_device_types:
+  - product_family: "Switches and Hubs"
+    product_series: "Cisco Catalyst 9500 Series Switches"
+  - product_family: "Switches and Hubs"
+    product_series: "Cisco Catalyst 9000 Series Virtual Switches"
+  - product_family: "Switches and Hubs"
+    product_series: "Cisco Catalyst 9300 Series Switches"
+  - product_family: "Switches and Hubs"
+    product_series: "Cisco Catalyst 9400 Series Switches"
+```
 
 ## Git Diff Header
 
@@ -48,7 +91,7 @@ The playbook can optionally prepend Git diff information as Jinja comments at th
 **Example diff header:**
 ```jinja
 {## a1b2c3d4 ##}
-{## diff --git a/FABRIC-VRF.j2 b/FABRIC-VRF.j2 ##}
+{## diff --git a/Template-A.j2 b/Template-A.j2 ##}
 {## @@ -1,5 +1,6 @@ ##}
 {## +new line added ##}
 ```
@@ -70,29 +113,29 @@ The playbook supports synchronization of **composite CLI templates** to Cisco Ca
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        Git Repository                                │
-│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐ │
-│  │  FABRIC-VRF.j2  │    │ FABRIC-EVPN.j2  │    │ FABRIC-NVE.j2   │ │
-│  └────────┬────────┘    └────────┬────────┘    └────────┬────────┘ │
-│           │                      │                      │          │
-│           └──────────────────────┼──────────────────────┘          │
+│                        Git Repository                               │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐  │
+│  │  Template-A.j2  │    │  Template-B.j2  │    │  Template-C.j2  │  │
+│  └────────┬────────┘    └────────┬────────┘    └────────┬────────┘  │
+│           │                      │                      │           │
+│           └──────────────────────┼──────────────────────┘           │
 │                                  ▼                                  │
-│                    ┌─────────────────────────┐                     │
-│                    │  BGP-EVPN-BUILD.yml     │  ← Definition file  │
-│                    │  (in same folder)       │    inside Git repo  │
-│                    └─────────────────────────┘                     │
+│                    ┌─────────────────────────┐                      │
+│                    │  COMPOSITE-BUILD.yml    │  ← Definition file   │
+│                    │  (in same folder)       │    inside Git repo   │
+│                    └─────────────────────────┘                      │
 └─────────────────────────────────────────────────────────────────────┘
                                    │
                                    ▼ Ansible Playbook
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    Cisco Catalyst Center                             │
-│  ┌─────────────────────────────────────────────────────────────┐   │
-│  │              Composite Template: BGP-EVPN-BUILD.j2          │   │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       │   │
-│  │  │FABRIC-VRF│→│FABRIC-NVE│→│FABRIC-   │→│FABRIC-   │→ ...  │   │
-│  │  │   .j2    │ │   .j2    │ │EVPN.j2   │ │OVERLAY.j2│       │   │
-│  │  └──────────┘ └──────────┘ └──────────┘ └──────────┘       │   │
-│  └─────────────────────────────────────────────────────────────┘   │
+│                    Cisco Catalyst Center                            │
+│  ┌─────────────────────────────────────────────────────────────┐    │
+│  │              Composite Template: COMPOSITE-BUILD.j2         │    │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐        │    │
+│  │  │Template-A│→│Template-B│→│Template-C│→│Template-D│→ ...   │    │
+│  │  │   .j2    │ │   .j2    │ │   .j2    │ │   .j2    │        │    │
+│  │  └──────────┘ └──────────┘ └──────────┘ └──────────┘        │    │
+│  └─────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -101,13 +144,13 @@ The playbook supports synchronization of **composite CLI templates** to Cisco Ca
 Place a YAML definition file alongside your templates in the Git repository. The playbook automatically discovers all `.yml` files in the synchronized repository:
 
 ```
-CatalystCenter-BGP-EVPN-VXLAN/        # Git repository
-└── BGP EVPN/                         # Template folder
-    ├── FABRIC-VRF.j2
-    ├── FABRIC-EVPN.j2
-    ├── FABRIC-NVE.j2
+MyTemplateRepository/                  # Git repository
+└── Templates/                         # Template folder
+    ├── Template-A.j2
+    ├── Template-B.j2
+    ├── Template-C.j2
     ├── ...
-    └── BGP-EVPN-BUILD.yml            # Composite definition → creates BGP-EVPN-BUILD.j2
+    └── COMPOSITE-BUILD.yml            # Composite definition → creates COMPOSITE-BUILD.j2
 ```
 
 **Definition File Format:**
@@ -118,23 +161,21 @@ CatalystCenter-BGP-EVPN-VXLAN/        # Git repository
 
 # Ordered list of templates to include in the composite
 templates:
-  - name: "FABRIC-VRF.j2"
-  - name: "FABRIC-LOOPBACKS.j2"
-  - name: "FABRIC-NVE.j2"
-  - name: "FABRIC-MCAST.j2"
-  - name: "FABRIC-EVPN.j2"
-  - name: "FABRIC-OVERLAY.j2"
-  - name: "FABRIC-IPSEC.j2"
-  - name: "FABRIC-NAC-IOT.j2"
+  - name: "Template-A.j2"
+  - name: "Template-B.j2"
+  - name: "Template-C.j2"
+  - name: "Template-D.j2"
+  - name: "Template-E.j2"
+  - name: "Template-F.j2"
 ```
 
 ### Template Inclusion Guidelines
 
 | Template Type | Include in Composite | Reason |
 |---------------|----------------------|--------|
-| `FABRIC-*.j2` | ✅ Yes | Top-level executable templates |
-| `DEFN-*.j2`   | ❌ No  | Data definitions (included via Jinja2 `{% include %}`) |
-| `FUNC-*.j2`   | ❌ No  | Macro libraries (included via Jinja2 `{% include %}`) |
+| Top-level config templates | ✅ Yes | Executable templates that run independently |
+| Definition files | ❌ No  | Data definitions (included via Jinja2 `{% include %}`) |
+| Macro libraries | ❌ No  | Function libraries (included via Jinja2 `{% include %}`) |
 
 > **Note:** Only include top-level templates that execute independently. Templates referenced via Jinja2 `{% include %}` statements are resolved at render time and should not be added to the composite.
 
@@ -144,12 +185,12 @@ The playbook generates `containingTemplates` structures that conform to the Cisc
 
 ```json
 {
-  "name": "FABRIC-VRF.j2",
+  "name": "Template-A.j2",
   "id": "75ec3be5-7fd4-4110-aaef-071e1b768179",
   "composite": false,
   "language": "JINJA",
   "description": "description",
-  "projectName": "CatalystCenter-BGP-EVPN-VXLAN",
+  "projectName": "MyTemplateProject",
   "deviceTypes": [{"productFamily": "Switches and Hubs"}],
   "templateParams": [],
   "tags": []
@@ -173,26 +214,26 @@ The playbook creates composite template payloads through the following stages:
 2. **Load Definitions** – Parses each YAML file to extract the composite name and ordered template list:
    ```yaml
    composite_definitions: [{
-     'name': 'BGP-EVPN-BUILD.j2',
-     'definition_path': '/path/to/BGP-EVPN-BUILD.yml',
-     'template_names': ['FABRIC-VRF.j2', 'FABRIC-LOOPBACKS.j2', ...]
+     'name': 'COMPOSITE-BUILD.j2',
+     'definition_path': '/path/to/COMPOSITE-BUILD.yml',
+     'template_names': ['Template-A.j2', 'Template-B.j2', ...]
    }]
    ```
 
 3. **Prepare API List** – Builds initial structure with template names and determines if composite exists:
    ```yaml
    composite_api_list: [{
-     'name': 'BGP-EVPN-BUILD.j2',
+     'name': 'COMPOSITE-BUILD.j2',
      'existing_id': '...',  # or '' if new
      'is_new': true/false,
-     'containingTemplates': [{'name': 'FABRIC-VRF.j2', 'composite': false}, ...]
+     'containingTemplates': [{'name': 'Template-A.j2', 'composite': false}, ...]
    }]
    ```
 
 4. **Resolve IDs** – The included `composite-resolve-ids.yml` resolves each template name to its Catalyst Center ID:
    ```yaml
    resolved_templates: [{
-     'name': 'FABRIC-VRF.j2',
+     'name': 'Template-A.j2',
      'id': '75ec3be5-7fd4-4110-aaef-071e1b768179',
      'composite': false,
      'language': 'JINJA',
@@ -236,33 +277,51 @@ ansible-galaxy collection install -r requirements.yml
 
 ### Configuration
 
-1. Update `credentials.yml` with your Cisco Catalyst Center host and connection settings
-2. Create `vault.yml` with your credentials and encrypt it:
+#### 1. Configure Ansible Inventory
 
-   ```bash
-   ansible-vault encrypt ansible-git-catc/vault.yml
-   ```
+Update `ansible-git-catc/inventory.yml` with your Cisco Catalyst Center host and Git repository settings:
+
+```yaml
+all:
+  hosts:
+    catalyst_center:
+      ansible_host: your-dnac-host.example.com
+      dnac_host: your-dnac-host.example.com
+      dnac_port: 443
+      dnac_version: 2.3.7.6
+      git_repo: "https://github.com/your-org/your-template-repo.git"
+      git_branch: "main"
+```
+
+#### 2. Configure Credentials
+
+Create `vault.yml` from the example template and add your credentials:
+
+```bash
+cp ansible-git-catc/vault.yml.example ansible-git-catc/vault.yml
+# Edit vault.yml with your credentials
+ansible-vault encrypt ansible-git-catc/vault.yml
+```
 
 ## Usage
 
-Run the playbook with a vault password file:
+### Using the Updated Playbook
 
 ```bash
-ansible-playbook ansible-git-catc/ansible-git-catc.yml --vault-password-file .vault_pass
+ansible-playbook -i ansible-git-catc/inventory.yml ansible-git-catc/ansible-git-catc.yml --vault-password-file .vault_pass
 ```
 
 Alternatively, use an interactive vault password prompt:
 
 ```bash
-ansible-playbook ansible-git-catc/ansible-git-catc.yml --ask-vault-pass
+ansible-playbook -i ansible-git-catc/inventory.yml ansible-git-catc/ansible-git-catc.yml --ask-vault-pass
 ```
 
 Enable debug mode for verbose output:
 
 ```bash
-DEBUG=true ansible-playbook ansible-git-catc/ansible-git-catc.yml --vault-password-file .vault_pass
+DEBUG=true ansible-playbook -i ansible-git-catc/inventory.yml ansible-git-catc/ansible-git-catc.yaml --vault-password-file .vault_pass
 ```
-
 ## Example Output
 
 The screenshot below demonstrates the playbook's capabilities:

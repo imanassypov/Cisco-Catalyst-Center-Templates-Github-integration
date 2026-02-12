@@ -1,0 +1,7 @@
+---
+# vault.yml.example
+# Copy this file to vault.yml and encrypt with: ansible-vault encrypt ansible-git-catc/vault.yml
+# These credentials will be used to authenticate to Cisco Catalyst Center
+
+dnac_username: "admin"
+dnac_password: "your_password_here"
