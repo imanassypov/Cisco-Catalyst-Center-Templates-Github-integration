@@ -1,3 +1,15 @@
+# ============================================================================
+# Authors
+# ============================================================================
+# | Name            | Role                              | Contact              |
+# |-----------------|-----------------------------------|----------------------|
+# | Igor Manassypov | Systems Engineer                  | imanassy@cisco.com   |
+# | Keith Baldwin   | Technical Solutions Architect     | kebaldwi@cisco.com   |
+# | Pawan Singh     | Engineering Technical Leader      | pawansi@cisco.com    |
+#
+# Copyright © 2024-2026 Cisco Systems, Inc. All rights reserved.
+# ============================================================================
+
 ---
 - name: Template Synchronization from Git using Template Workflow Manager
   hosts: catalyst_center
@@ -115,9 +127,9 @@
         regular_template_list: "{{ regular_template_list + [item] if (composite_referenced_templates is not defined or item.path | basename not in composite_referenced_templates) else regular_template_list }}"
       loop: "{{ template_file_list.files }}"
 
-    - name: Set template processing order (priority first, then regular)
+    - name: Set template processing order (regular first for dependencies, then priority)
       set_fact:
-        sorted_template_files: "{{ priority_template_list + regular_template_list }}"
+        sorted_template_files: "{{ regular_template_list + priority_template_list }}"
 
     - name: --DEBUG-- show sorted template list
       when: DEBUG

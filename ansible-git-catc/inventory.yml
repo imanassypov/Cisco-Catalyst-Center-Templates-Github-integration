@@ -1,3 +1,14 @@
+# ============================================================================
+# Authors
+# ============================================================================
+# | Name            | Role                              | Contact              |
+# |-----------------|-----------------------------------|----------------------|
+# | Igor Manassypov | Systems Engineer                  | imanassy@cisco.com   |
+# | Keith Baldwin   | Technical Solutions Architect     | kebaldwi@cisco.com   |
+#
+# Copyright © 2024-2026 Cisco Systems, Inc. All rights reserved.
+# ============================================================================
+
 ---
 all:
   hosts:
@@ -10,7 +21,7 @@ all:
       dnac_host: dnac.maple.ciscolabs.com
       dnac_username: admin
       dnac_port: 443  # optional, defaults to 443
-      dnac_version: 2.3.7.9
+      dnac_version: 2.3.7.6
       dnac_verify: false
       dnac_debug: true
       dnac_log_level: INFO
