@@ -4,8 +4,6 @@
 # | Name            | Role                              | Contact              |
 # |-----------------|-----------------------------------|----------------------|
 # | Igor Manassypov | Systems Engineer                  | imanassy@cisco.com   |
-# | Keith Baldwin   | Technical Solutions Architect     | kebaldwi@cisco.com   |
-#
 # Copyright © 2024-2026 Cisco Systems, Inc. All rights reserved.
 # ============================================================================
 
@@ -32,11 +30,19 @@ all:
       # Git Repository Configuration
       git_repo: "https://github.com/imanassypov/CatalystCenter-BGP-EVPN-VXLAN.git"
       git_branch: "main"
-      git_local_dest: "{{ playbook_dir }}/../CatC Templates/CatalystCenter-BGP-EVPN-VXLAN"
+      #git_branch: "feature-border-automation"
+      # Subfolder within the repository that contains the templates to sync.
+      # Equivalent to the folder that git_local_dest previously pointed at.
+      # Leave unset (or set to "") to scan the entire repository root.
+      git_repo_subfolder: "BGP EVPN"
+      # git_api_base_url: "https://api.github.com"  # override for GitHub Enterprise
+      # git_token is optional - define in vault.yml for private repos or to raise API rate limits
+      # When omitted, the playbook runs unauthenticated (suitable for public repositories)
 
       # Catalyst Center Project Name
       # If specified here, it will override the default project name derived from the template file path
-      projectName: "BGP EVPN Site1"
+      #projectName: "BGP EVPN Site1"
+      projectName: "CLUS26-Site1"
 
       template_extension: "j2"
       
