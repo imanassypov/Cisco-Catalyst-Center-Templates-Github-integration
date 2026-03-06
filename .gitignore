@@ -1,13 +1,8 @@
 .DS_Store
 venv
 dnac.log
-dnac_git_templates
 # Ansible Vault secrets
 ansible-git-catc/vault.yml
 .vault_pass
-# Cloned template repositories (managed separately)
-CatC Templates/
-# Working directory
-workdir/
 # Copilot instructions
 .github/copilot-instructions.md
