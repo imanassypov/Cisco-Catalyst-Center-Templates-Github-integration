@@ -4,8 +4,6 @@
 # | Name            | Role                              | Contact              |
 # |-----------------|-----------------------------------|----------------------|
 # | Igor Manassypov | Systems Engineer                  | imanassy@cisco.com   |
-# | Keith Baldwin   | Technical Solutions Architect     | kebaldwi@cisco.com   |
-#
 # Copyright © 2024-2026 Cisco Systems, Inc. All rights reserved.
 # ============================================================================
 
@@ -13,12 +11,12 @@
 # process-template.yml
 # Processes individual template files and builds workflow manager configuration
 
-- name: Extract template metadata for {{ template_file.path | basename }}
+- name: Extract template metadata for {{ template_file.name }}
   set_fact:
-    template_name: "{{ template_file.path | basename }}"
-    template_content_raw: "{{ lookup('file', template_file.path) | replace('{{ TEMPLATE_PROJECT_NAME }}', projectName) }}"
-    commit_message: "{{ template_git_log.results[template_idx].stdout[:catc_template_summary_maxchar] if template_git_log.results[template_idx].stdout else 'Synced from Git' }}"
-    diff_content_raw: "{{ template_git_diff.results[template_idx].stdout | regex_replace('([^\\n]+)', '{## \\1 ##}') + '\\n' if include_diff_header else '' }}"
+    template_name: "{{ template_file.name }}"
+    template_content_raw: "{{ template_file.content | replace('{{ TEMPLATE_PROJECT_NAME }}', projectName) }}"
+    commit_message: "{{ template_file.commit_message }}"
+    diff_content_raw: "{{ template_file.diff_content | regex_replace('([^\\n]+)', '{## \\1 ##}') + '\\n' if (include_diff_header and template_file.diff_content) else '' }}"
 
 - name: Assemble final template content for {{ template_name }}
   set_fact:
