@@ -4,8 +4,6 @@
 # | Name            | Role                              | Contact              |
 # |-----------------|-----------------------------------|----------------------|
 # | Igor Manassypov | Systems Engineer                  | imanassy@cisco.com   |
-# | Keith Baldwin   | Technical Solutions Architect     | kebaldwi@cisco.com   |
-# | Pawan Singh     | Engineering Technical Leader      | pawansi@cisco.com    |
 #
 # Copyright © 2024-2026 Cisco Systems, Inc. All rights reserved.
 # ============================================================================
@@ -41,48 +39,129 @@
       debug:
         msg: "{{ start_timestamp.date + ' ' + start_timestamp.time }}"
 
-    - name: Clone templates project from GitHub repo
-      ansible.builtin.git:
-        accept_hostkey: yes
-        repo: "{{ git_repo }}"
-        dest: "{{ git_local_dest }}"
-        version: "{{ git_branch | default('HEAD') }}"
-        update: yes
-        force: yes
-      register: git_clone_result
+    # starting with example repo url: "https://github.com/org/repo.git"
+    # step 1: regex_replace('https://github\\.com/', '') - strips the https://github.com/ prefix. 
+    # step 2: regex_replace('\\.git$', '') - strips the .git suffix.
+    - name: Parse GitHub repository slug from git_repo URL
+      set_fact:
+        git_repo_slug: "{{ git_repo | regex_replace('https://github\\.com/', '') | regex_replace('\\.git$', '') }}"
+        git_api_base: "{{ git_api_base_url | default('https://api.github.com') }}"
 
-    - name: Get cloned template list
-      find:
-        paths: "{{ git_local_dest }}"
-        patterns: "*.{{ template_extension }}"
-        recurse: yes
-        file_type: file
-      register: template_file_list
+    # git_token is optional for public repositories.
+    # When defined (private repos or to raise API rate limits), an Authorization header is included.
+    # When absent, requests are made unauthenticated (GitHub allows ~60 requests/hour for public repos).
+    - name: Build GitHub auth header
+      set_fact:
+        git_auth_header: "{{ {'Authorization': 'Bearer ' + git_token} if (git_token is defined and git_token | length > 0) else {} }}"
+
+    - name: Fetch repository file tree from GitHub API
+      uri:
+        url: "{{ git_api_base }}/repos/{{ git_repo_slug }}/git/trees/{{ git_branch | default('HEAD') }}?recursive=1"
+        method: GET
+        headers: "{{ git_auth_header | combine({'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}) }}"
+        status_code: 200
+      register: repo_tree_response
+
+    - name: Build subfolder prefix filter
+      set_fact:
+        git_tree_prefix: "{{ (git_repo_subfolder + '/') if (git_repo_subfolder is defined and git_repo_subfolder | length > 0) else '' }}"
+
+    - name: Build template and composite file lists from repository tree
+      set_fact:
+        api_template_files: "{{ repo_tree_response.json.tree | selectattr('type', 'eq', 'blob') | selectattr('path', 'search', '^' + git_tree_prefix) | selectattr('path', 'search', '\\.' + template_extension + '$') | list }}"
+        api_composite_files: "{{ repo_tree_response.json.tree | selectattr('type', 'eq', 'blob') | selectattr('path', 'search', '^' + git_tree_prefix) | selectattr('path', 'search', '\\.yml$') | list }}"
 
     - name: Get Project name from template folder
       set_fact:
-        projectName: "{{ projectName | default(template_file_list.files[0].path | dirname | basename) }}"
+        projectName: "{{ projectName | default(api_template_files[0].path | dirname | basename) }}"
 
     - name: --DEBUG-- Project Name
       when: DEBUG
       debug:
         msg: "{{ projectName }}"
 
-    - name: Get template commit messages
-      ansible.builtin.shell:
-        cmd: "git log --pretty=format:\"%ad | %B [%an]\" -1 --date=short -- '{{ item.path }}'"
-        chdir: "{{ item.path | dirname }}"
-      with_items: "{{ template_file_list.files }}"
-      register: template_git_log
-      changed_when: false
+    - name: Fetch template file contents from GitHub
+      uri:
+        url: "https://raw.githubusercontent.com/{{ git_repo_slug }}/{{ git_branch | default('HEAD') }}/{{ item.path | replace(' ', '%20') }}"
+        method: GET
+        headers: "{{ git_auth_header }}"
+        return_content: yes
+        status_code: 200
+      loop: "{{ api_template_files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      register: template_content_results
 
-    - name: Get template diff log
-      ansible.builtin.shell:
-        cmd: "git log --pretty=format:\"%H\" -p -1 --date=short -- '{{ item.path }}'"
-        chdir: "{{ item.path | dirname }}"
-      with_items: "{{ template_file_list.files }}"
-      register: template_git_diff
-      changed_when: false
+    - name: Fetch last commit info for each template file
+      uri:
+        url: "{{ git_api_base }}/repos/{{ git_repo_slug }}/commits?path={{ item.path | replace(' ', '%20') }}&per_page=1&sha={{ git_branch | default('HEAD') }}"
+        method: GET
+        headers: "{{ git_auth_header | combine({'Accept': 'application/vnd.github+json'}) }}"
+        status_code: 200
+      loop: "{{ api_template_files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      register: template_commit_results
+
+    - name: Fetch commit diff for each template file
+      when: include_diff_header and template_commit_results.results[diff_idx].json | length > 0
+      uri:
+        url: "{{ git_api_base }}/repos/{{ git_repo_slug }}/commits/{{ template_commit_results.results[diff_idx].json[0].sha }}"
+        method: GET
+        headers: "{{ git_auth_header | combine({'Accept': 'application/vnd.github+json'}) }}"
+        status_code: 200
+      loop: "{{ api_template_files }}"
+      loop_control:
+        index_var: diff_idx
+        label: "{{ item.path | basename }}"
+      register: template_diff_results
+
+    - name: Build enriched template file objects
+      set_fact:
+        enriched_template_files: "{{ enriched_template_files | default([]) + [enriched] }}"
+      vars:
+        _commit_list: "{{ template_commit_results.results[tmpl_idx].json }}"
+        _commit: "{{ _commit_list[0] if _commit_list | length > 0 else {} }}"
+        _commit_message: "{{ (_commit.commit.author.date | default('') + ' | ' + _commit.commit.message | default('') + ' [' + _commit.commit.author.name | default('') + ']')[:catc_template_summary_maxchar] if _commit else 'Synced from Git' }}"
+        _diff_files: "{{ template_diff_results.results[tmpl_idx].json.files | default([]) if (include_diff_header and template_diff_results is defined and not (template_diff_results.results[tmpl_idx].skipped | default(false))) else [] }}"
+        _file_patch: "{{ (_diff_files | selectattr('filename', 'eq', item.path) | list | first).patch | default('') if _diff_files | length > 0 else '' }}"
+        enriched:
+          name: "{{ item.path | basename }}"
+          path: "{{ item.path }}"
+          content: "{{ template_content_results.results[tmpl_idx].content }}"
+          commit_message: "{{ _commit_message }}"
+          diff_content: "{{ _file_patch }}"
+      loop: "{{ api_template_files }}"
+      loop_control:
+        index_var: tmpl_idx
+        label: "{{ item.path | basename }}"
+
+    - name: Fetch composite definition file contents from GitHub
+      when: api_composite_files | length > 0
+      uri:
+        url: "https://raw.githubusercontent.com/{{ git_repo_slug }}/{{ git_branch | default('HEAD') }}/{{ item.path | replace(' ', '%20') }}"
+        method: GET
+        headers: "{{ git_auth_header }}"
+        return_content: yes
+        status_code: 200
+      loop: "{{ api_composite_files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      register: composite_content_results
+
+    - name: Build enriched composite file objects
+      when: api_composite_files | length > 0
+      set_fact:
+        enriched_composite_files: "{{ enriched_composite_files | default([]) + [enriched] }}"
+      vars:
+        enriched:
+          name: "{{ item.path | basename }}"
+          path: "{{ item.path }}"
+          content: "{{ composite_content_results.results[comp_idx].content }}"
+      loop: "{{ api_composite_files }}"
+      loop_control:
+        index_var: comp_idx
+        label: "{{ item.path | basename }}"
 
     # DYNAMIC TEMPLATE PROCESSING ORDER
     # Instead of a static template_order dictionary, the playbook dynamically determines
@@ -97,19 +176,13 @@
     # This approach ensures templates are created in the correct dependency order without
     # maintaining a hard-coded list, making the playbook more flexible and maintainable.
 
-    - name: Find composite definition YAML files in synced repo
-      find:
-        paths: "{{ git_local_dest }}"
-        patterns: "*.yml"
-        file_type: file
-        recurse: yes
-      register: composite_definition_files
-
     - name: Extract templates referenced in composite definitions
       set_fact:
-        composite_referenced_templates: "{{ composite_referenced_templates | default([]) + (lookup('file', item.path) | from_yaml).templates | map(attribute='name') | list }}"
-      with_items: "{{ composite_definition_files.files }}"
-      when: composite_definition_files.files | length > 0
+        composite_referenced_templates: "{{ composite_referenced_templates | default([]) + (item.content | from_yaml).templates | map(attribute='name') | list }}"
+      loop: "{{ enriched_composite_files | default([]) }}"
+      when: enriched_composite_files is defined and enriched_composite_files | length > 0
+      loop_control:
+        label: "{{ item.name }}"
 
     - name: --DEBUG-- Templates referenced in composites
       when: DEBUG and composite_referenced_templates is defined
@@ -123,9 +196,9 @@
 
     - name: Build template lists based on composite references
       set_fact:
-        priority_template_list: "{{ priority_template_list + [item] if (composite_referenced_templates is defined and item.path | basename in composite_referenced_templates) else priority_template_list }}"
-        regular_template_list: "{{ regular_template_list + [item] if (composite_referenced_templates is not defined or item.path | basename not in composite_referenced_templates) else regular_template_list }}"
-      loop: "{{ template_file_list.files }}"
+        priority_template_list: "{{ priority_template_list + [item] if (composite_referenced_templates is defined and item.name in composite_referenced_templates) else priority_template_list }}"
+        regular_template_list: "{{ regular_template_list + [item] if (composite_referenced_templates is not defined or item.name not in composite_referenced_templates) else regular_template_list }}"
+      loop: "{{ enriched_template_files }}"
 
     - name: Set template processing order (regular first for dependencies, then priority)
       set_fact:
@@ -134,7 +207,7 @@
     - name: --DEBUG-- show sorted template list
       when: DEBUG
       debug:
-        msg: "{{ sorted_template_files | map(attribute='path') | map('basename') | list }}"
+        msg: "{{ sorted_template_files | map(attribute='name') | list }}"
 
     - name: Process regular templates in correct order
       include_tasks: process-template.yml
@@ -149,9 +222,9 @@
         msg: "{{ template_workflow_configs }}"
 
     - name: Process composite templates
-      when: composite_definition_files.files | length > 0
+      when: enriched_composite_files is defined and enriched_composite_files | length > 0
       include_tasks: process-composite.yml
-      with_items: "{{ composite_definition_files.files }}"
+      with_items: "{{ enriched_composite_files | default([]) }}"
       loop_control:
         loop_var: composite_file
 

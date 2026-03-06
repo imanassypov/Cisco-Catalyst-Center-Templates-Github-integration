@@ -4,8 +4,6 @@
 # | Name            | Role                              | Contact              |
 # |-----------------|-----------------------------------|----------------------|
 # | Igor Manassypov | Systems Engineer                  | imanassy@cisco.com   |
-# | Keith Baldwin   | Technical Solutions Architect     | kebaldwi@cisco.com   |
-#
 # Copyright © 2024-2026 Cisco Systems, Inc. All rights reserved.
 # ============================================================================
 
@@ -13,13 +11,13 @@
 # process-composite.yml
 # Processes composite template definition files
 
-- name: Load composite definition from {{ composite_file.path | basename }}
+- name: Load composite definition from {{ composite_file.name }}
   set_fact:
-    composite_def: "{{ lookup('file', composite_file.path) | from_yaml }}"
+    composite_def: "{{ composite_file.content | from_yaml }}"
 
 - name: Extract composite metadata
   set_fact:
-    composite_name: "{{ composite_def.composite_name | default((composite_file.path | basename | regex_replace('\\.yml$', '.j2'))) }}"
+    composite_name: "{{ composite_def.composite_name | default((composite_file.name | regex_replace('\\.yml$', '.j2'))) }}"
     composite_template_names: "{{ composite_def.templates | map(attribute='name') | list }}"
 
 - name: Build containing templates list
