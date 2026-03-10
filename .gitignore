@@ -1,8 +1,9 @@
 .DS_Store
 venv
 dnac.log
-# Ansible Vault secrets
-ansible-git-catc/vault.yml
+*.log
+# Ansible Vault secrets and password files
+vault.yml
 .vault_pass
 # Copilot instructions
 .github/copilot-instructions.md

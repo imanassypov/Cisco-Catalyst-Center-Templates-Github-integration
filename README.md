@@ -88,16 +88,15 @@ Automates synchronization of Jinja2 templates from a GitHub repository directly 
 
 ```
 .
-├── ansible.cfg                        # Auto-loads inventory.yml (no -i flag needed)
-├── requirements.txt                   # Python dependencies (dnacentersdk, ansible, etc.)
-├── requirements.yml                   # Ansible collection dependencies (cisco.dnac)
-└── ansible-git-catc/
-    ├── ansible-git-catc.yml           # Main playbook
-    ├── process-template.yml           # Included task: builds one template config object
-    ├── process-composite.yml          # Included task: builds one composite config object
-    ├── inventory.yml                  # CatC connection + Git repo configuration
-    ├── vault.yml                      # Encrypted credentials (dnac_username/password)
-    └── vault.yml.example              # Vault template
+├── ansible.cfg                # Auto-loads inventory.yml (no -i flag needed)
+├── requirements.txt           # Python dependencies (dnacentersdk, ansible)
+├── requirements.yml           # Ansible Galaxy collection dependencies (cisco.dnac, community.general)
+├── ansible-git-catc.yml       # Main playbook
+├── process-template.yml       # Included task: builds one regular template config object
+├── process-composite.yml      # Included task: builds one composite template config object
+├── inventory.yml              # CatC connection parameters + Git repo configuration
+├── vault.yml                  # Encrypted credentials — gitignored, never commit
+└── vault.yml.example          # Vault template — safe to commit
 ```
 
 ---
@@ -507,11 +506,11 @@ The composite is created in CatC as `BGP-EVPN-BUILD.j2` (filename `.yml` → `.j
 
 ### ansible.cfg
 
-Located at the workspace root — eliminates the need for `-i` on every run:
+Located in the playbook directory — eliminates the need for `-i` on every run:
 
 ```ini
 [defaults]
-inventory = ansible-git-catc/inventory.yml
+inventory = inventory.yml
 ```
 
 > **Note:** The directory must not be world-writable (`chmod o-w .`) or Ansible will ignore `ansible.cfg` for security reasons.
@@ -575,24 +574,36 @@ dnac_password: "your_password"
 
 ## Setup & Usage
 
-### Installation
+### Prerequisites
 
 ```bash
+# Install Python dependencies
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+
+# Install Ansible Galaxy collections
 ansible-galaxy collection install -r requirements.yml
 ```
 
 ### Credentials
 
 ```bash
-cp ansible-git-catc/vault.yml.example ansible-git-catc/vault.yml
-# Edit vault.yml with your credentials, then encrypt:
-ansible-vault encrypt ansible-git-catc/vault.yml
+# Create vault file from template and populate credentials
+cp vault.yml.example vault.yml
+
+# Edit vault.yml with your CatC credentials (and optional git_token for private repos)
+# then encrypt with Ansible Vault:
+ansible-vault encrypt vault.yml
+
+# Store the vault password in a local file (gitignored):
+echo 'your_vault_password' > .vault_pass
+chmod 600 .vault_pass
 ```
 
 ### Fix Directory Permissions (one-time)
+
+Ansible ignores `ansible.cfg` if the directory is world-writable:
 
 ```bash
 chmod o-w .
@@ -601,27 +612,28 @@ chmod o-w .
 ### Run
 
 ```bash
-# Standard run (inventory loaded automatically via ansible.cfg)
-ansible-playbook ansible-git-catc/ansible-git-catc.yml --vault-password-file .vault_pass
+# Standard run — inventory loaded automatically via ansible.cfg
+ansible-playbook ansible-git-catc.yml --vault-password-file .vault_pass
 
 # Interactive vault password prompt
-ansible-playbook ansible-git-catc/ansible-git-catc.yml --ask-vault-pass
+ansible-playbook ansible-git-catc.yml --ask-vault-pass
 
-# Debug mode — shows sorted template list, configs, and sync results
-DEBUG=true ansible-playbook ansible-git-catc/ansible-git-catc.yml --vault-password-file .vault_pass
+# Debug mode — shows sorted template list, workflow configs, and sync results
+DEBUG=true ansible-playbook ansible-git-catc.yml --vault-password-file .vault_pass
 ```
 
 ---
 
 ## Compatibility Matrix
 
-Match `dnac_version` in `inventory.yml` to your Catalyst Center version:
+Match `dnac_version` in `inventory.yml` to your Catalyst Center version.
+This playbook suite ships `requirements.yml` pinned to `cisco.dnac 6.46.0`, which is verified compatible with CatC 2.3.7.6 and 2.3.7.9.
 
 | Cisco Catalyst Center | `cisco.dnac` Collection | `dnacentersdk` | Notes |
 |-----------------------|-------------------------|----------------|-------|
 | 2.3.5.3 | 6.13.3 | 2.6.11 | Legacy |
-| 2.3.7.6 | 6.25.0 | 2.8.3 | Stable |
-| 2.3.7.9 | 6.33.2 – 6.46.0 | 2.8.6 | Recommended |
+| 2.3.7.6 | 6.25.0 – **6.46.0** | 2.8.3 – 2.8.6 | Lab baseline; **6.46.0 verified** |
+| 2.3.7.9 | 6.33.2 – **6.46.0** | 2.8.6 | Recommended; **6.46.0 verified** |
 | 3.1.3.0 | ≥ 6.36.0 | ≥ 2.10.1 | Latest |
 
 ---
