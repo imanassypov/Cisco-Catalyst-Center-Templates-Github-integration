@@ -1,5 +1,5 @@
 # Ansible Galaxy collection requirements for ansible-git-catc
-# Verified compatible with Cisco Catalyst Center 2.3.7.6 and 2.3.7.9
+# Verified compatible with Cisco Catalyst Center 2.3.7.6, 2.3.7.9, and 2.3.7.10
 # Install with: ansible-galaxy collection install -r requirements.yml
 #
 # Modules used:

@@ -16,10 +16,10 @@ all:
       ansible_python_interpreter: "{{ ansible_playbook_python }}"
       
       # Cisco Catalyst Center Connection Parameters
-      dnac_host: dnac.maple.ciscolabs.com
+      dnac_host: 198.18.129.100
       dnac_username: admin
       dnac_port: 443  # optional, defaults to 443
-      dnac_version: 2.3.7.6
+      dnac_version: 2.3.7.9   # CatC appliance is 2.3.7.10; SDK max known is 2.3.7.9
       dnac_verify: false
       dnac_debug: true
       dnac_log_level: INFO
@@ -42,7 +42,7 @@ all:
       # Catalyst Center Project Name
       # If specified here, it will override the default project name derived from the template file path
       #projectName: "BGP EVPN Site1"
-      projectName: "CLUS26-Site1"
+      projectName: "Building P0"
 
       template_extension: "j2"
       
