@@ -1,6 +1,79 @@
-# Ansible GitOps for Cisco Catalyst Center Templates
+# 5.0 — Cisco Catalyst Center: Template GitOps Automation
 
-Automates synchronization of Jinja2 templates from a GitHub repository directly into Cisco Catalyst Center (CatC) Template Projects — with composite template support, automatic dependency ordering, and Git commit metadata in version descriptions.
+> **Playbook:** `ansible-git-catc.yml`  
+> **Included tasks:** `process-template.yml`, `process-composite.yml`  
+> **Module:** `cisco.dnac.template_workflow_manager`  
+> **Minimum Catalyst Center version:** 2.3.7.6  
+> **Minimum Ansible version:** 2.15  
+> **Authors:** Igor Manassypov — Systems Engineer (imanassy@cisco.com)  
+> **Copyright © 2024–2026 Cisco Systems, Inc. All rights reserved.**
+
+---
+
+## Table of Contents
+
+1. [Overview](#overview)
+   - [Logical Flow](#logical-flow)
+2. [Prerequisites](#prerequisites)
+3. [Directory Structure](#directory-structure)
+4. [Installation](#installation)
+5. [Configuration](#configuration)
+   - [Inventory](#inventory)
+   - [Vault (Credentials)](#vault-credentials)
+6. [Repository Layout — What the Playbook Reads](#repository-layout--what-the-playbook-reads)
+   - [Template Files (`.j2`)](#template-files-j2)
+   - [Composite Definition Files (`.yml`)](#composite-definition-files-yml)
+   - [Template Naming Conventions](#template-naming-conventions)
+   - [Full Example Repository Structure](#full-example-repository-structure)
+7. [Playbook Walkthrough — Step by Step](#playbook-walkthrough--step-by-step)
+   - [Stage 1: Fetch the Repository Tree](#stage-1-fetch-the-repository-tree)
+   - [Stage 2: Fetch File Contents and Commit Metadata](#stage-2-fetch-file-contents-and-commit-metadata)
+   - [Stage 3: Dynamic Template Ordering](#stage-3-dynamic-template-ordering)
+   - [Stage 4: Build Workflow Configurations](#stage-4-build-workflow-configurations)
+   - [Stage 5: Sync to Catalyst Center](#stage-5-sync-to-catalyst-center)
+8. [Included Task Files](#included-task-files)
+   - [process-template.yml](#process-templateyml)
+   - [process-composite.yml](#process-compositeyml)
+9. [Data Transformation Reference](#data-transformation-reference)
+10. [Running the Playbook](#running-the-playbook)
+11. [Debug Mode](#debug-mode)
+12. [Expected Output](#expected-output)
+13. [Troubleshooting](#troubleshooting)
+
+---
+
+## Overview
+
+This playbook implements a **GitOps workflow** for Cisco Catalyst Center template management. It reads Jinja2 template files and composite template definitions directly from a GitHub repository (no local clone required), enriches each template with Git commit metadata, automatically determines the correct processing order, and syncs everything to a CatC Template Project using `cisco.dnac.template_workflow_manager`.
+
+### Key capabilities
+
+| Capability | Description |
+|-----------|-------------|
+| **No local clone** | All content fetched at runtime via GitHub REST API and raw URLs |
+| **Idempotent sync** | `state: merged` — creates templates that don't exist, updates those that changed |
+| **Composite templates** | Builds ordered multi-template composites with full `containingTemplates` resolution |
+| **Dynamic ordering** | Processing order derived from composite definitions — no static lists to maintain |
+| **Git metadata in CatC** | Commit timestamp, message, and author written to the template description field |
+| **Optional diff headers** | Git patch embedded as Jinja2 comments (`{## ... ##}`) for traceability |
+| **Private repo support** | Optional `git_token` for authenticated API calls (also raises rate limits) |
+
+### Playbook ordering dependency
+
+This playbook runs **independently** of the discovery/assignment chain but produces templates that are referenced by [6.0 — Network Profile](../6.0-Cisco-Catalyst-Center-Network-Profile/README.md). Templates must exist in CatC before a network profile can bind them to a site.
+
+```
+5.0 Templates (this playbook) ─────→ 6.0 Network Profile
+                                             (binds templates to sites)
+```
+
+### Logical Flow
+
+The diagram below shows every decision point and state transition from startup to completion:
+
+![Logical Flow](DIAGRAMS/logical-flow.png)
+
+> Source: [`DIAGRAMS/logical-flow.mmd`](DIAGRAMS/logical-flow.mmd) — re-render with `mmdc -i DIAGRAMS/logical-flow.mmd -o DIAGRAMS/logical-flow.png --scale 3`
 
 ---
 
@@ -96,7 +169,10 @@ Automates synchronization of Jinja2 templates from a GitHub repository directly 
 ├── process-composite.yml      # Included task: builds one composite template config object
 ├── inventory.yml              # CatC connection parameters + Git repo configuration
 ├── vault.yml                  # Encrypted credentials — gitignored, never commit
-└── vault.yml.example          # Vault template — safe to commit
+├── vault.yml.example          # Vault template — safe to commit
+└── DIAGRAMS/
+    ├── logical-flow.mmd        # Mermaid source — re-render with mmdc
+    └── logical-flow.png        # Rendered flowchart (referenced by README)
 ```
 
 ---

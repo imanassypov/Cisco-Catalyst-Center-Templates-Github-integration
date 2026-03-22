@@ -1,0 +1,68 @@
+flowchart TD
+    START([Start]) --> A
+
+    A["Stage 1 - Parse repo URL<br/>strip https://github.com/ prefix<br/>strip .git suffix → repo slug<br/>build GitHub API base URL<br/>build auth header (optional git_token)"]
+    A --> B
+
+    B["Fetch repository file tree<br/>GET /repos/{slug}/git/trees/{branch}?recursive=1<br/>returns flat list of all blob paths"]
+    B --> C{tree<br/>fetched?}
+    C -->|No / 404| FAIL_A([Fail: repo not found<br/>or bad credentials])
+    C -->|Yes| D
+
+    D["Stage 2 - Filter file lists<br/>template_files: paths ending in .j2<br/>composite_files: paths ending in .yml<br/>both filtered by optional subfolder prefix"]
+    D --> E{.j2 files<br/>found?}
+    E -->|No| FAIL_B([Fail: no template files<br/>found in repo])
+    E -->|Yes| F
+
+    F["Fetch each template's content<br/>GET raw.githubusercontent.com/.../file.j2<br/>+ GET /repos/.../commits?path=file&amp;per_page=1<br/>→ last commit message, author, date<br/>optionally fetch diff patch for header embed"]
+    F --> G
+
+    G["Build enriched template objects<br/>name, path, content,<br/>commit_message (truncated to catc_template_summary_maxchar)<br/>diff_content (patch, if include_diff_header=true)"]
+    G --> H{composite .yml<br/>files found?}
+    H -->|Yes| I
+    H -->|No| J
+
+    I["Fetch each composite definition's content<br/>GET raw.githubusercontent.com/.../file.yml<br/>build enriched composite objects"]
+    I --> J
+
+    J["Stage 3 - Dynamic template ordering<br/>Extract member template names from<br/>composite definitions (.yml)<br/>→ composite_referenced_templates"]
+    J --> K
+
+    K["Separate into two lists:<br/>priority_template_list: referenced in composites<br/>regular_template_list: not referenced in composites<br/>sorted_template_files = regular + priority<br/>(dependencies before composites)"]
+    K --> L
+
+    L(["For each template in sorted_template_files"])
+    L --> M
+
+    M["process-template.yml<br/>Stage 4 - Build template_workflow_manager config<br/>project_name, template_name, language (JINJA),<br/>device_types, software_type,<br/>description = Git commit metadata,<br/>template_content (+ optional diff header as {## ##})"]
+    M --> N{More<br/>templates?}
+    N -->|Yes| L
+    N -->|No| O
+
+    O{composite files<br/>to process?}
+    O -->|Yes| P
+    O -->|No| Q
+
+    P(["For each composite file"])
+    P --> R
+
+    R["process-composite.yml<br/>Parse YAML composite definition<br/>resolve containingTemplates list<br/>build composite template_workflow_manager config<br/>composite: true, member template names + ordering"]
+    R --> S{More<br/>composites?}
+    S -->|Yes| P
+    S -->|No| Q
+
+    Q["Stage 5 - Sync regular templates<br/>template_workflow_manager<br/>state: merged<br/>config = template_workflow_configs<br/>creates / updates templates in CatC project"]
+    Q --> T{composite<br/>configs exist?}
+    T -->|Yes| U
+    T -->|No| V
+
+    U["Sync composite templates<br/>template_workflow_manager<br/>state: merged<br/>config = composite_workflow_configs<br/>creates / updates composites in CatC project"]
+    U --> V
+
+    V["Summary<br/>templates synced, composites synced<br/>Git metadata embedded in CatC descriptions"]
+    V --> DONE([Done])
+
+    style FAIL_A fill:#c0392b,color:#fff,stroke:#922b21
+    style FAIL_B fill:#c0392b,color:#fff,stroke:#922b21
+    style DONE fill:#27ae60,color:#fff,stroke:#1e8449
+    style START fill:#2980b9,color:#fff,stroke:#1a5276
