@@ -1,8 +1,9 @@
-# 5.0 — Cisco Catalyst Center: Template GitOps Automation
+# 6.0 — Cisco Catalyst Center: Template GitHub Sync
 
 > **Playbook:** `ansible-git-catc.yml`  
-> **Included tasks:** `process-template.yml`, `process-composite.yml`  
-> **Module:** `cisco.dnac.template_workflow_manager`  
+> **Task files:** `process-template.yml`, `process-composite.yml`  
+> **Module (CatC):** `cisco.dnac.template_workflow_manager`  
+> **Module (GitHub):** `ansible.builtin.uri`  
 > **Minimum Catalyst Center version:** 2.3.7.6  
 > **Minimum Ansible version:** 2.15  
 > **Authors:** Igor Manassypov — Systems Engineer (imanassy@cisco.com)  
@@ -13,731 +14,954 @@
 ## Table of Contents
 
 1. [Overview](#overview)
-   - [Logical Flow](#logical-flow)
 2. [Prerequisites](#prerequisites)
 3. [Directory Structure](#directory-structure)
 4. [Installation](#installation)
 5. [Configuration](#configuration)
-   - [Inventory](#inventory)
-   - [Vault (Credentials)](#vault-credentials)
+   - [Inventory Variables](#inventory-variables)
+   - [Vault — Encrypted Credentials](#vault--encrypted-credentials)
 6. [Repository Layout — What the Playbook Reads](#repository-layout--what-the-playbook-reads)
-   - [Template Files (`.j2`)](#template-files-j2)
-   - [Composite Definition Files (`.yml`)](#composite-definition-files-yml)
    - [Template Naming Conventions](#template-naming-conventions)
-   - [Full Example Repository Structure](#full-example-repository-structure)
-7. [Playbook Walkthrough — Step by Step](#playbook-walkthrough--step-by-step)
-   - [Stage 1: Fetch the Repository Tree](#stage-1-fetch-the-repository-tree)
-   - [Stage 2: Fetch File Contents and Commit Metadata](#stage-2-fetch-file-contents-and-commit-metadata)
-   - [Stage 3: Dynamic Template Ordering](#stage-3-dynamic-template-ordering)
-   - [Stage 4: Build Workflow Configurations](#stage-4-build-workflow-configurations)
-   - [Stage 5: Sync to Catalyst Center](#stage-5-sync-to-catalyst-center)
-8. [Included Task Files](#included-task-files)
+   - [Composite Definition Files (.yml)](#composite-definition-files-yml)
+   - [Cross-Template Includes](#cross-template-includes)
+7. [How It Works](#how-it-works)
+   - [Logical Flow Diagram](#logical-flow-diagram)
+   - [Stage 1 — Pre-flight Checks & Fetch Repository Tree](#stage-1--pre-flight-checks--fetch-repository-tree)
+   - [Stage 2 — Fetch File Contents & Commit Metadata](#stage-2--fetch-file-contents--commit-metadata)
+   - [Stage 3 — Dynamic Template Ordering](#stage-3--dynamic-template-ordering)
+   - [Stage 4 — Build Workflow Configurations](#stage-4--build-workflow-configurations)
+   - [Stage 5 — Sync to Catalyst Center](#stage-5--sync-to-catalyst-center)
+8. [Task File Reference](#task-file-reference)
    - [process-template.yml](#process-templateyml)
    - [process-composite.yml](#process-compositeyml)
-9. [Data Transformation Reference](#data-transformation-reference)
+9. [API Payload Reference](#api-payload-reference)
 10. [Running the Playbook](#running-the-playbook)
 11. [Debug Mode](#debug-mode)
 12. [Expected Output](#expected-output)
-13. [Troubleshooting](#troubleshooting)
+13. [Playbook Ordering Dependency](#playbook-ordering-dependency)
+14. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Overview
 
-This playbook implements a **GitOps workflow** for Cisco Catalyst Center template management. It reads Jinja2 template files and composite template definitions directly from a GitHub repository (no local clone required), enriches each template with Git commit metadata, automatically determines the correct processing order, and syncs everything to a CatC Template Project using `cisco.dnac.template_workflow_manager`.
+This playbook implements a **general-purpose GitOps workflow** for Cisco Catalyst Center template management. It can synchronize **any collection of Jinja2 templates** stored in a GitHub repository — simple flat collections, modular libraries, or fully nested composite templates — directly to a Catalyst Center Template Project without requiring a local clone.
 
-### Key capabilities
+Point the playbook at any GitHub repository subfolder containing `.j2` files and it will fetch the content, enrich each template with Git commit metadata, determine the correct processing order, and sync everything to CatC. No code changes are needed to switch between different template collections.
+
+> **About the BGP EVPN example used throughout this document:**  
+> The working example in this playbook is the [CatalystCenter-BGP-EVPN-VXLAN](https://github.com/imanassypov/CatalystCenter-BGP-EVPN-VXLAN) template collection. It is used here because it exercises the full range of playbook capabilities — particularly **composite (nested) templates** where one top-level template wraps an ordered set of member templates, and **cross-template Jinja2 includes** where configuration templates pull in shared data-definition and macro-library files at render time. A simpler flat template collection (just `.j2` files, no `.yml` composite definitions) works identically with zero additional configuration.
+
+### What It Does
 
 | Capability | Description |
-|-----------|-------------|
-| **No local clone** | All content fetched at runtime via GitHub REST API and raw URLs |
-| **Idempotent sync** | `state: merged` — creates templates that don't exist, updates those that changed |
+|---|---|
+| **No local clone** | All content fetched at runtime via the GitHub REST API and raw content URLs |
+| **Idempotent sync** | `state: merged` — creates templates that don't exist yet; updates those that have changed |
+| **Automatic ordering** | Template processing order derived from composite definitions — no hard-coded lists to maintain |
 | **Composite templates** | Builds ordered multi-template composites with full `containingTemplates` resolution |
-| **Dynamic ordering** | Processing order derived from composite definitions — no static lists to maintain |
-| **Git metadata in CatC** | Commit timestamp, message, and author written to the template description field |
-| **Optional diff headers** | Git patch embedded as Jinja2 comments (`{## ... ##}`) for traceability |
-| **Private repo support** | Optional `git_token` for authenticated API calls (also raises rate limits) |
+| **Git metadata in CatC** | Commit timestamp, message, and author written to the template description field in CatC |
+| **Optional diff headers** | Git patch embedded as Jinja2 comments (`{## ... ##}`) at the top of each template |
+| **Private repo support** | Optional `git_token` for authenticated API calls (also raises rate limits from 60 to 5,000/hr) |
 
-### Playbook ordering dependency
+---
 
-This playbook runs **independently** of the discovery/assignment chain but produces templates that are referenced by [6.0 — Network Profile](../6.0-Cisco-Catalyst-Center-Network-Profile/README.md). Templates must exist in CatC before a network profile can bind them to a site.
+## Prerequisites
+
+| Requirement | Version | Where to Get It |
+|---|---|---|
+| Python | ≥ 3.9 | [python.org](https://www.python.org) |
+| Ansible | ≥ 2.15 | `pip install ansible` |
+| `cisco.dnac` Ansible collection | 6.46.0 (tested) | `ansible-galaxy collection install -r requirements.yml` |
+| `community.general` collection | ≥ 8.0 | Same `requirements.yml` |
+| `dnacentersdk` Python SDK | ≥ 2.8.6 | `pip install -r requirements.txt` |
+| Cisco Catalyst Center | ≥ 2.3.7.6 | — |
+| GitHub repository | public or private | — |
+
+---
+
+## Directory Structure
 
 ```
-5.0 Templates (this playbook) ─────→ 6.0 Network Profile
-                                             (binds templates to sites)
+6.0-Cisco-Catalyst-Center-Templates-Github-integration/
+├── ansible.cfg              # Sets inventory = inventory.yml (no -i flag needed)
+├── ansible-git-catc.yml     # Main playbook — 5-stage GitOps sync
+├── process-template.yml     # Included task: builds one regular template config
+├── process-composite.yml    # Included task: builds one composite template config
+├── inventory.yml            # CatC connection + Git repo parameters
+├── vault.yml                # Encrypted credentials (gitignored, never commit plain)
+├── vault.yml.example        # Vault template — safe to commit
+├── requirements.txt         # Python package dependencies
+├── requirements.yml         # Ansible Galaxy collection dependencies
+└── DIAGRAMS/
+    ├── logical-flow.mmd     # Mermaid flowchart source
+    └── logical-flow.png     # Rendered diagram (embedded below)
 ```
 
-### Logical Flow
+---
 
-The diagram below shows every decision point and state transition from startup to completion:
+## Installation
+
+```bash
+# 1. Activate your Python virtual environment
+cd 6.0-Cisco-Catalyst-Center-Templates-Github-integration/
+source ../.venv/bin/activate      # adjust path as needed
+
+# 2. Install Python dependencies
+pip install -r requirements.txt
+
+# 3. Install Ansible Galaxy collections
+ansible-galaxy collection install -r requirements.yml
+
+# 4. Fix directory permissions (one-time — Ansible ignores ansible.cfg in world-writable dirs)
+chmod o-w .
+
+# 5. Set up vault credentials (see Configuration section below)
+cp vault.yml.example vault.yml
+# Edit vault.yml, then encrypt it:
+ansible-vault encrypt vault.yml
+echo 'your_vault_password_here' > .vault_pass
+chmod 600 .vault_pass
+```
+
+---
+
+## Configuration
+
+### Inventory Variables
+
+All parameters live in `inventory.yml`. Nothing is hard-coded in the playbook.
+
+#### Catalyst Center Connection
+
+These variables authenticate to the CatC REST API via the `cisco.dnac` collection:
+
+| Variable | Example | Description |
+|---|---|---|
+| `dnac_host` | `198.18.129.100` | CatC management IP or hostname |
+| `dnac_port` | `443` | HTTPS port (default: 443) |
+| `dnac_version` | `2.3.7.9` | CatC version — controls which SDK API paths are used. Set to the highest version that the SDK knows, even if your appliance is newer. |
+| `dnac_verify` | `false` | Set `true` for production (requires a trusted cert). `false` disables TLS verification for lab. |
+| `dnac_debug` | `true` | Enables SDK debug output to `dnac.log` |
+| `dnac_log_level` | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+| `dnac_log` | `true` | Writes SDK log to `dnac.log` in the playbook directory |
+
+#### GitHub Repository
+
+| Variable | Example | Description |
+|---|---|---|
+| `git_repo` | `https://github.com/org/repo.git` | Full GitHub repository URL |
+| `git_branch` | `main` | Branch to read templates from |
+| `git_repo_subfolder` | `BGP EVPN` | Subfolder within the repo to scan for `.j2` and `.yml` files. Leave blank to scan the entire repository root. |
+| `git_api_base_url` | `https://api.github.com` | Override for GitHub Enterprise instances |
+
+> **Note on `git_token`:** This variable is intentionally absent from `inventory.yml` and defined only in `vault.yml`. See the [Vault section](#vault--encrypted-credentials) below.
+
+#### Catalyst Center Project
+
+| Variable | Example | Description |
+|---|---|---|
+| `projectName` | `Building P0` | CatC project where templates are created or updated. If not set, the playbook derives it from the subfolder name (`dirname` of the first template path). |
+
+#### Template Defaults
+
+These values are applied to every template created in CatC:
+
+| Variable | Default | Description |
+|---|---|---|
+| `template_extension` | `j2` | File extension to treat as templates. Change to `j2` only — do not use `jinja`. |
+| `include_diff_header` | `false` | When `true`, embeds the last git diff patch as `{## ... ##}` Jinja comments at the top of each template for traceability |
+| `default_software_type` | `IOS` | Maps to `softwareType` in the CatC template API |
+| `default_software_variant` | `XE` | Maps to `softwareVariant` — `XE`, `XR`, or `NX` |
+| `default_template_version` | `1.0` | Version label written to CatC. Does not auto-increment. |
+| `catc_template_summary_maxchar` | `1024` | Maximum length (characters) of the template description field in CatC. Git commit messages are truncated to this length. |
+| `default_device_types` | *(list — see below)* | List of device families and series that can use these templates. Must match what CatC knows about your devices. |
+
+**`default_device_types` structure:**
+
+```yaml
+default_device_types:
+  - product_family: "Switches and Hubs"
+    product_series: "Cisco Catalyst 9500 Series Switches"
+  - product_family: "Switches and Hubs"
+    product_series: "Cisco Catalyst 9000 Series Virtual Switches"
+  - product_family: "Switches and Hubs"
+    product_series: "Cisco Catalyst 9300 Series Switches"
+  - product_family: "Switches and Hubs"
+    product_series: "Cisco Catalyst 9400 Series Switches"
+```
+
+> Both `product_family` and `product_series` must be provided for every entry — partial objects cause a CatC API validation error.
+
+---
+
+### Vault — Encrypted Credentials
+
+Credentials are stored in `vault.yml` and **never committed in plain text**. The vault is automatically loaded by the playbook via `vars_files: [vault.yml]`.
+
+#### vault.yml contents
+
+```yaml
+dnac_username: "admin"
+dnac_password: "your_catc_password"
+# git_token: "ghp_yourGitHubPersonalAccessToken"
+```
+
+> **`git_token` — important for reliability**
+>
+> Without a token, GitHub limits unauthenticated API requests to **60/hour per IP**. With a token, the limit is **5,000/hour**. Even for public repos, always set the token to avoid rate-limit failures during runs with many templates.
+>
+> For **private repos** the token is required — unauthenticated access returns 404.
+>
+> Generate one at [github.com/settings/tokens](https://github.com/settings/tokens):
+> - Public repos → `public_repo` (read) scope
+> - Private repos → `repo` scope
+
+#### Vault operations
+
+```bash
+# Create and encrypt (first time)
+cp vault.yml.example vault.yml
+# edit vault.yml with your values
+ansible-vault encrypt vault.yml --vault-password-file .vault_pass
+
+# Edit an existing encrypted vault (stays encrypted on disk)
+EDITOR=nano ansible-vault edit vault.yml --vault-password-file .vault_pass
+
+# View without editing
+ansible-vault view vault.yml --vault-password-file .vault_pass
+```
+
+---
+
+## Repository Layout — What the Playbook Reads
+
+The playbook scans one git repository subfolder for two file types:
+
+| File type | Pattern | Purpose |
+|---|---|---|
+| Template files | `*.j2` | Jinja2 templates pushed as individual templates to CatC |
+| Composite definitions | `*.yml` | YAML files that define composite template membership and order |
+
+### Template Naming Conventions
+
+The BGP EVPN template set uses a three-tier naming structure that directly maps to the processing order:
+
+| Prefix | Role | CatC template type | Included in composite `.yml`? |
+|---|---|---|---|
+| `DEFN-*.j2` | **Data definitions** — sets Jinja2 variables (VRF names, loopback IPs, VNI ranges, etc.) | Regular | ❌ No — included via `{% include %}` inside FABRIC templates at *render* time |
+| `FUNC-*.j2` | **Macro libraries** — reusable Jinja2 macros and functions | Regular | ❌ No — same as DEFN |
+| `FABRIC-*.j2` | **Top-level config templates** — render actual IOS-XE configuration pushed to devices | Regular | ✅ Yes — listed as members in the composite `.yml` |
+
+**Current template set (BGP EVPN project — 20 templates + 1 composite):**
+
+```
+# Data definitions (DEFN-*) — 9 templates
+DEFN-CLIENT-PORTS.j2    Port assignment variables for client-facing interfaces
+DEFN-L3OUT.j2           L3 handoff / external routing variables
+DEFN-LOOPBACKS.j2       Loopback IP address variables
+DEFN-MCAST.j2           Multicast underlay variables (RP, groups)
+DEFN-NAC.j2             ISE / NAC policy variables
+DEFN-OVERLAY.j2         VXLAN overlay VNI and VLAN mapping variables
+DEFN-ROLES.j2           Device role assignments (Spine / Leaf / Border)
+DEFN-VNIOFFSETS.j2      Per-VRF VNI offset variables
+DEFN-VRF.j2             VRF name and route-target variables
+
+# Macro libraries (FUNC-*) — 2 templates
+FUNC-CLIENT-PORTS.j2    Macros for client port configuration rendering
+FUNC-VRF-LOOKUP.j2      Macros for VRF lookup and RT/RD construction
+
+# Configuration templates (FABRIC-*) — 9 templates
+FABRIC-CLIENT-PORTS.j2  Access/trunk port configuration for client-facing interfaces
+FABRIC-EVPN.j2          BGP EVPN address-family configuration
+FABRIC-L3OUT.j2         L3 external handoff configuration
+FABRIC-LOOPBACKS.j2     Loopback interface configuration
+FABRIC-MCAST.j2         PIM sparse-mode and RP configuration
+FABRIC-NAC.j2           ISE / 802.1X policy configuration
+FABRIC-NVE.j2           NVE (network virtualization endpoint) configuration
+FABRIC-OVERLAY.j2       VLAN and VNI-to-VRF mapping configuration
+FABRIC-VRF.j2           VRF definition and BGP peering configuration
+
+# Composite template (*.yml → *.j2) — 1 template
+BGP-EVPN-BUILD.j2       Ordered wrapper: applies all 9 FABRIC-* templates in sequence
+```
+
+### Composite Definition Files (.yml)
+
+A `.yml` file placed anywhere inside `git_repo_subfolder` defines one composite template in CatC. It contains nothing more than an ordered list of member template names:
+
+```yaml
+# BGP-EVPN-BUILD.yml
+# ─────────────────────────────────────────────────────
+# Defines the ordered list of templates in this composite.
+# The list order controls the sequence in which templates
+# are rendered and pushed to the device.
+#
+# IMPORTANT:
+#   - Only list FABRIC-* top-level templates here.
+#   - DEFN-* and FUNC-* are included inside the FABRIC
+#     templates via Jinja {% include %} — do NOT add them.
+# ─────────────────────────────────────────────────────
+
+# Optional: override the composite name in CatC.
+# Defaults to filename with .yml → .j2 (BGP-EVPN-BUILD.j2)
+# composite_name: "CUSTOM-NAME.j2"
+
+templates:
+  - name: "FABRIC-VRF.j2"          # 1. VRF definitions first (BGP peering depends on VRFs)
+  - name: "FABRIC-LOOPBACKS.j2"    # 2. Loopback interfaces (VTEP source for NVE)
+  - name: "FABRIC-L3OUT.j2"        # 3. L3 external handoffs
+  - name: "FABRIC-NVE.j2"          # 4. VXLAN NVE interface (VTEP)
+  - name: "FABRIC-MCAST.j2"        # 5. Underlay multicast (RP, PIM)
+  - name: "FABRIC-EVPN.j2"         # 6. BGP EVPN address-family
+  - name: "FABRIC-OVERLAY.j2"      # 7. VLAN to VNI mapping
+  - name: "FABRIC-CLIENT-PORTS.j2" # 8. Client-facing port configuration
+  - name: "FABRIC-NAC.j2"          # 9. 802.1X / ISE policy
+```
+
+This file produces the composite template `BGP-EVPN-BUILD.j2` in Catalyst Center.
+
+### Cross-Template Includes
+
+The FABRIC-* templates reference DEFN-* and FUNC-* templates using a project-name path prefix. The playbook substitutes the actual project name at build time:
+
+```jinja2
+{# At the top of FABRIC-VRF.j2 #}
+{% include "{{ TEMPLATE_PROJECT_NAME }}/DEFN-VRF.j2" %}
+{% include "{{ TEMPLATE_PROJECT_NAME }}/FUNC-VRF-LOOKUP.j2" %}
+```
+
+`{{ TEMPLATE_PROJECT_NAME }}` is replaced by the value of `projectName` from `inventory.yml` (e.g., `Building P0`) before the template is uploaded to CatC. This is why DEFN-* and FUNC-* templates must exist in CatC *before* the FABRIC-* templates that include them can be rendered correctly.
+
+---
+
+## How It Works
+
+The playbook runs in five sequential stages. All five happen within a single Ansible play targeting the `catalyst_center` inventory host.
+
+### Logical Flow Diagram
 
 ![Logical Flow](DIAGRAMS/logical-flow.png)
 
-> Source: [`DIAGRAMS/logical-flow.mmd`](DIAGRAMS/logical-flow.mmd) — re-render with `mmdc -i DIAGRAMS/logical-flow.mmd -o DIAGRAMS/logical-flow.png --scale 3`
+> Source: [`DIAGRAMS/logical-flow.mmd`](DIAGRAMS/logical-flow.mmd)  
+> Re-render: `mmdc -i DIAGRAMS/logical-flow.mmd -o DIAGRAMS/logical-flow.png --scale 3 && /usr/bin/sips -Z 4000 DIAGRAMS/logical-flow.png`
 
 ---
 
-## Table of Contents
+### Stage 1 — Pre-flight Checks & Fetch Repository Tree
 
-1. [Features](#features)
-2. [Architecture Overview](#architecture-overview)
-3. [File Structure](#file-structure)
-4. [Detailed Processing Flow](#detailed-processing-flow)
-   - [Stage 1 — Fetch Repository Tree](#stage-1--fetch-repository-tree)
-   - [Stage 2 — Fetch File Contents & Commit Metadata](#stage-2--fetch-file-contents--commit-metadata)
-   - [Stage 3 — Dynamic Template Ordering](#stage-3--dynamic-template-ordering)
-   - [Stage 4 — Build Workflow Configurations](#stage-4--build-workflow-configurations)
-   - [Stage 5 — Sync to Catalyst Center](#stage-5--sync-to-catalyst-center)
-5. [process-template.yml Logic](#process-templateyml-logic)
-6. [process-composite.yml Logic](#process-compositeyml-logic)
-7. [Template Conventions](#template-conventions)
-8. [Composite Template Definitions](#composite-template-definitions)
-9. [Configuration](#configuration)
-10. [Setup & Usage](#setup--usage)
-11. [Compatibility Matrix](#compatibility-matrix)
-12. [Troubleshooting](#troubleshooting)
-13. [References](#references)
+Before fetching any templates, the playbook validates that the repository and branch are accessible. This avoids wasting time on authentication failures or typos in `inventory.yml`.
 
----
-
-## Features
-
-- **No local clone required** — fetches all content via GitHub REST API and raw URLs at runtime
-- **Declarative sync** via `cisco.dnac.template_workflow_manager` — idempotent create/update
-- **Dynamic dependency ordering** — template processing order derived automatically from composite definitions; no static lists to maintain
-- **Composite template support** — syncs ordered multi-template composites with full `containingTemplates` resolution
-- **Git metadata in descriptions** — commit timestamp, message, and author written to template description field
-- **Optional diff headers** — Git patch embedded as Jinja2 comments for traceability
-- **Inventory-based configuration** — `inventory.yml` centralizes all connection and repo settings; supports multiple environments
-- **Vault-encrypted credentials** — username/password stored and encrypted separately in `vault.yml`
-
----
-
-## Architecture Overview
+**URL parsing:**
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                         GitHub Repository                            │
-│                                                                      │
-│   BGP EVPN/                                                          │
-│   ├── DEFN-VRF.j2          ← Data definition (Jinja include)        │
-│   ├── FUNC-OBJECT-MACROS.j2← Macro library (Jinja include)          │
-│   ├── FABRIC-NVE.j2        ← Top-level config template              │
-│   ├── FABRIC-VRF.j2        ← Top-level config template              │
-│   ├── ...                                                            │
-│   └── BGP-EVPN-BUILD.yml   ← Composite definition file              │
-└─────────────────────────────┬────────────────────────────────────────┘
-                              │  GitHub REST API + raw.githubusercontent.com
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                    ansible-git-catc.yml (Ansible)                    │
-│                                                                      │
-│  1. Fetch file tree via GitHub API                                   │
-│  2. Download .j2 content + .yml composite definitions                │
-│  3. Fetch commit metadata per file                                   │
-│  4. Order templates: [regular] → [priority] → [composites]          │
-│  5. Build template_workflow_configs + composite_workflow_configs     │
-│  6. Sync via cisco.dnac.template_workflow_manager                    │
-└─────────────────────────────┬────────────────────────────────────────┘
-                              │  HTTPS REST API
-                              ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                    Cisco Catalyst Center                             │
-│                                                                      │
-│   Project: CLUS26-Site1                                              │
-│   ├── DEFN-VRF.j2          (regular template)                       │
-│   ├── FUNC-OBJECT-MACROS.j2(regular template)                       │
-│   ├── FABRIC-NVE.j2        (priority template)                      │
-│   ├── FABRIC-VRF.j2        (priority template)                      │
-│   ├── ...                                                            │
-│   └── BGP-EVPN-BUILD.j2    (composite template)                     │
-│       └── containingTemplates: [FABRIC-VRF, FABRIC-NVE, ...]        │
-└──────────────────────────────────────────────────────────────────────┘
+git_repo: "https://github.com/imanassypov/CatalystCenter-BGP-EVPN-VXLAN.git"
+                │
+                ▼  regex_replace (strip https://github.com/ and .git)
+git_repo_slug = "imanassypov/CatalystCenter-BGP-EVPN-VXLAN"
 ```
 
----
-
-## File Structure
+**Pre-flight API calls:**
 
 ```
-.
-├── ansible.cfg                # Auto-loads inventory.yml (no -i flag needed)
-├── requirements.txt           # Python dependencies (dnacentersdk, ansible)
-├── requirements.yml           # Ansible Galaxy collection dependencies (cisco.dnac, community.general)
-├── ansible-git-catc.yml       # Main playbook
-├── process-template.yml       # Included task: builds one regular template config object
-├── process-composite.yml      # Included task: builds one composite template config object
-├── inventory.yml              # CatC connection parameters + Git repo configuration
-├── vault.yml                  # Encrypted credentials — gitignored, never commit
-├── vault.yml.example          # Vault template — safe to commit
-└── DIAGRAMS/
-    ├── logical-flow.mmd        # Mermaid source — re-render with mmdc
-    └── logical-flow.png        # Rendered flowchart (referenced by README)
+GET https://api.github.com/repos/{git_repo_slug}
+    ← 200 OK: repo accessible
+    ← 404: fail — "Repository not found: verify git_repo in inventory"
+
+GET https://api.github.com/repos/{git_repo_slug}/branches/{git_branch}
+    ← 200 OK: branch exists
+    ← 404: fail — "Branch not found: verify git_branch in inventory"
 ```
 
----
-
-## Detailed Processing Flow
-
-### Full Playbook Flow
+**Fetch recursive file tree:**
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│  ansible-git-catc.yml                                                           │
-│                                                                                 │
-│  ┌──────────────────────────────────────────────────────────────────────────┐   │
-│  │ STAGE 1 — Fetch Repository Tree                                          │   │
-│  │                                                                          │   │
-│  │  Parse git_repo URL → git_repo_slug                                      │   │
-│  │  Build optional Authorization header (git_token)                        │   │
-│  │  GET /repos/{slug}/git/trees/{branch}?recursive=1                       │   │
-│  │       │                                                                  │   │
-│  │       ├─ filter path starts with git_repo_subfolder/                    │   │
-│  │       ├─ filter *.j2  → api_template_files[]                            │   │
-│  │       └─ filter *.yml → api_composite_files[]                           │   │
-│  └──────────────────────────────────────────────────────────────────────────┘   │
-│                                  │                                              │
-│  ┌──────────────────────────────────────────────────────────────────────────┐   │
-│  │ STAGE 2 — Fetch File Contents & Commit Metadata                         │   │
-│  │                                                                          │   │
-│  │  For each .j2 file:                                                      │   │
-│  │    GET raw.githubusercontent.com/.../file.j2   → template content       │   │
-│  │    GET /repos/{slug}/commits?path=file.j2      → last commit info       │   │
-│  │    (optional) GET /repos/{slug}/commits/{sha}  → diff patch             │   │
-│  │                                                                          │   │
-│  │  For each .yml file:                                                     │   │
-│  │    GET raw.githubusercontent.com/.../file.yml  → composite definition   │   │
-│  │                                                                          │   │
-│  │  Assembled into:                                                         │   │
-│  │    enriched_template_files[]  +  enriched_composite_files[]             │   │
-│  └──────────────────────────────────────────────────────────────────────────┘   │
-│                                  │                                              │
-│  ┌──────────────────────────────────────────────────────────────────────────┐   │
-│  │ STAGE 3 — Dynamic Template Ordering                                     │   │
-│  │                                                                          │   │
-│  │  Parse each .yml composite definition → extract referenced template names│  │
-│  │    composite_referenced_templates = [FABRIC-VRF.j2, FABRIC-NVE.j2, …]  │   │
-│  │                                                                          │   │
-│  │  For each enriched template:                                             │   │
-│  │    name IN composite_referenced_templates  → priority_template_list[]   │   │
-│  │    name NOT IN composite_referenced_templates → regular_template_list[] │   │
-│  │                                                                          │   │
-│  │  sorted_template_files = regular_template_list + priority_template_list │   │
-│  └──────────────────────────────────────────────────────────────────────────┘   │
-│                                  │                                              │
-│  ┌──────────────────────────────────────────────────────────────────────────┐   │
-│  │ STAGE 4 — Build Workflow Configurations                                  │   │
-│  │                                                                          │   │
-│  │  include_tasks: process-template.yml  (loop over sorted_template_files) │   │
-│  │    → builds template_workflow_configs[]                                  │   │
-│  │                                                                          │   │
-│  │  include_tasks: process-composite.yml (loop over enriched_composite_files)│  │
-│  │    → builds composite_workflow_configs[]                                 │   │
-│  └──────────────────────────────────────────────────────────────────────────┘   │
-│                                  │                                              │
-│  ┌──────────────────────────────────────────────────────────────────────────┐   │
-│  │ STAGE 5 — Sync to Catalyst Center                                       │   │
-│  │                                                                          │   │
-│  │  cisco.dnac.template_workflow_manager                                    │   │
-│  │    state: merged                                                         │   │
-│  │    config: template_workflow_configs   ← individual templates first     │   │
-│  │                                                                          │   │
-│  │  cisco.dnac.template_workflow_manager                                    │   │
-│  │    state: merged                                                         │   │
-│  │    config: composite_workflow_configs  ← composites after               │   │
-│  └──────────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────────┘
+GET https://api.github.com/repos/{git_repo_slug}/git/trees/{git_branch}?recursive=1
+    Headers:
+      Accept: application/vnd.github+json
+      X-GitHub-Api-Version: 2022-11-28
+      Authorization: Bearer {git_token}   ← only if git_token defined
+
+    ← {
+        "tree": [
+          {"type": "blob", "path": "BGP EVPN/DEFN-VRF.j2",          "sha": "..."},
+          {"type": "blob", "path": "BGP EVPN/FABRIC-VRF.j2",         "sha": "..."},
+          {"type": "blob", "path": "BGP EVPN/BGP-EVPN-BUILD.yml",    "sha": "..."},
+          ...
+        ]
+      }
 ```
 
----
-
-### Stage 1 — Fetch Repository Tree
+**File filtering (applied to `tree[]`):**
 
 ```
-inventory.yml
-  git_repo: "https://github.com/org/repo.git"
-  git_branch: "main"
-  git_repo_subfolder: "BGP EVPN"           ← optional subfolder filter
-  git_token: (from vault, optional)
-         │
-         ▼
-  regex_replace → git_repo_slug = "org/repo"
-         │
-         ▼
-  GET https://api.github.com/repos/org/repo/git/trees/main?recursive=1
-         │
-         ▼
-  repo_tree_response.json.tree[]
-         │
-         ├── selectattr path starts with "BGP EVPN/"
-         ├── selectattr path matches "\.j2$"   → api_template_files[]
-         └── selectattr path matches "\.yml$"  → api_composite_files[]
+git_repo_subfolder = "BGP EVPN"
+git_tree_prefix    = "BGP EVPN/"
+
+All tree entries where:
+  type == "blob"
+  AND path starts with "BGP EVPN/"
+  AND path ends with ".j2"   → api_template_files[]   (20 files)
+
+All tree entries where:
+  type == "blob"
+  AND path starts with "BGP EVPN/"
+  AND path ends with ".yml"  → api_composite_files[]  (1 file)
 ```
 
 ---
 
 ### Stage 2 — Fetch File Contents & Commit Metadata
 
-```
-api_template_files[]                    api_composite_files[]
-       │                                         │
-       ▼                                         ▼
-GET raw.githubusercontent.com           GET raw.githubusercontent.com
-    /{slug}/{branch}/{path}                 /{slug}/{branch}/{path}
-       │                                         │
-       ▼                                         ▼
-template_content_results[]              composite_content_results[]
-       │
-       ▼
-GET /repos/{slug}/commits
-    ?path={file}&per_page=1&sha={branch}
-       │
-       ▼
-template_commit_results[]
-  └── json[0].commit.author.date
-  └── json[0].commit.message
-  └── json[0].commit.author.name
-       │
-       ▼ (if include_diff_header: true)
-GET /repos/{slug}/commits/{sha}
-       │
-       ▼
-template_diff_results[]
-  └── json.files[].patch
+For each file identified in Stage 1, the playbook fetches the content and — for templates — the latest commit metadata.
 
-       │                                         │
-       ▼                                         ▼
-enriched_template_files[]               enriched_composite_files[]
-  - name: "FABRIC-NVE.j2"                 - name: "BGP-EVPN-BUILD.yml"
-  - path: "BGP EVPN/FABRIC-NVE.j2"        - path: "BGP EVPN/BGP-EVPN-BUILD.yml"
-  - content: "..."                         - content: "templates:\n  - name: ..."
-  - commit_message: "2026-01-01 | ..."
-  - diff_content: "@@ -1,5 +1,6 ..."
+**For each `.j2` template:**
+
 ```
+# 1. Fetch raw template content
+GET https://raw.githubusercontent.com/{slug}/{branch}/{path}
+    ← raw Jinja2 text (e.g., the full FABRIC-VRF.j2 configuration template)
+
+# 2. Fetch last commit metadata
+GET https://api.github.com/repos/{slug}/commits
+    ?path={path}&per_page=1&sha={branch}
+    ← [
+        {
+          "sha": "abc123...",
+          "commit": {
+            "author": {
+              "name": "Igor Manassypov",
+              "date": "2026-03-15T14:22:10Z"
+            },
+            "message": "Add FABRIC-CLIENT-PORTS template"
+          }
+        }
+      ]
+
+# 3. (Optional — when include_diff_header: true)
+GET https://api.github.com/repos/{slug}/commits/{sha}
+    ← {
+        "files": [
+          {
+            "filename": "BGP EVPN/FABRIC-CLIENT-PORTS.j2",
+            "patch": "@@ -0,0 +1,42 @@\n+{# Client port configuration ... #}"
+          }
+        ]
+      }
+```
+
+**For each `.yml` composite definition:**
+
+```
+GET https://raw.githubusercontent.com/{slug}/{branch}/{path}
+    ← raw YAML text content of BGP-EVPN-BUILD.yml
+```
+
+**Result — enriched objects assembled:**
+
+```yaml
+# enriched_template_files[] — one entry per .j2 file
+- name: "FABRIC-VRF.j2"
+  path: "BGP EVPN/FABRIC-VRF.j2"
+  content: "{% include \"{{ TEMPLATE_PROJECT_NAME }}/DEFN-VRF.j2\" %}\n..."
+  commit_message: "2026-03-15T14:22:10Z | Add FABRIC-CLIENT-PORTS template [Igor Manassypov]"
+  diff_content: "@@ -10,5 +10,6 @@..."   # empty string if include_diff_header: false
+
+# enriched_composite_files[] — one entry per .yml file
+- name: "BGP-EVPN-BUILD.yml"
+  path: "BGP EVPN/BGP-EVPN-BUILD.yml"
+  content: "templates:\n  - name: \"FABRIC-VRF.j2\"\n  ..."
+```
+
+> **`catc_template_summary_maxchar`** — the `commit_message` field is truncated to this length (default 1024 characters) before being written to the template description in CatC. The format is `<date> | <message> [<author>]`.
 
 ---
 
 ### Stage 3 — Dynamic Template Ordering
 
-The playbook avoids any static `template_order` dictionary. Processing order is derived entirely from composite definitions found in the repository:
+This is the key intelligence of the playbook. Rather than maintaining a static list of template names in a specific order, the playbook **derives the processing order automatically** from the composite definition files.
+
+**Why order matters:**
+
+| Order | Why required |
+|---|---|
+| DEFN-* and FUNC-* processed first | FABRIC-* templates use `{% include "Project/DEFN-VRF.j2" %}` — the referenced template must exist in CatC before CatC can validate the FABRIC template |
+| FABRIC-* processed second | The composite template's `containingTemplates` references FABRIC-* templates by name — they must exist in CatC before the composite can be created |
+| Composite processed last | Has a hard dependency on all its member FABRIC-* templates already existing in CatC |
+
+**How the ordering is determined:**
 
 ```
-enriched_composite_files[]
-  └── BGP-EVPN-BUILD.yml content (YAML parsed)
-        templates:
-          - name: "FABRIC-VRF.j2"       ┐
-          - name: "FABRIC-LOOPBACKS.j2"  │
-          - name: "FABRIC-NVE.j2"        ├─ composite_referenced_templates[]
-          - name: "FABRIC-MCAST.j2"      │
-          - name: "FABRIC-EVPN.j2"       │
-          - name: "FABRIC-OVERLAY.j2"    │
-          - name: "FABRIC-NAC-IOT.j2"    ┘
+Step 1: Parse each enriched_composite_files[].content as YAML
+        → extract the list of template names under "templates:"
 
-enriched_template_files[]   (all 19 templates)
-           │
-           ▼
-  For each template:
-  ┌─────────────────────────────────────────────┐
-  │  name IN composite_referenced_templates?    │
-  │                                             │
-  │  YES → priority_template_list[]             │
-  │   (FABRIC-VRF, FABRIC-NVE, etc.)           │
-  │                                             │
-  │  NO  → regular_template_list[]             │
-  │   (DEFN-*, FUNC-*)                         │
-  └─────────────────────────────────────────────┘
-           │
-           ▼
-  sorted_template_files =
-    regular_template_list[]    ← processed FIRST (DEFN-*, FUNC-*)
-    + priority_template_list[] ← processed SECOND (FABRIC-*)
+        composite_referenced_templates = [
+          "FABRIC-VRF.j2",
+          "FABRIC-LOOPBACKS.j2",
+          "FABRIC-L3OUT.j2",
+          "FABRIC-NVE.j2",
+          "FABRIC-MCAST.j2",
+          "FABRIC-EVPN.j2",
+          "FABRIC-OVERLAY.j2",
+          "FABRIC-CLIENT-PORTS.j2",
+          "FABRIC-NAC.j2"
+        ]
 
-  WHY THIS ORDER:
-  - DEFN-* and FUNC-* templates must exist in CatC before FABRIC-* templates
-    can include them via {% include "ProjectName/DEFN-VRF.j2" %}
-  - FABRIC-* templates must exist before the composite can reference them
-  - Composites are processed entirely separately after both lists
+Step 2: For each template in enriched_template_files[]:
+
+  template.name IN composite_referenced_templates?
+  ├── YES → priority_template_list[]   (FABRIC-* templates)
+  └── NO  → regular_template_list[]   (DEFN-* and FUNC-* templates)
+
+Step 3: sorted_template_files = regular_template_list + priority_template_list
+
+        Processing order:
+          1. DEFN-CLIENT-PORTS.j2       ← regular (not in composite)
+          2. DEFN-L3OUT.j2              ← regular
+          3. DEFN-LOOPBACKS.j2          ← regular
+          4. DEFN-MCAST.j2              ← regular
+          5. DEFN-NAC.j2                ← regular
+          6. DEFN-OVERLAY.j2            ← regular
+          7. DEFN-ROLES.j2              ← regular
+          8. DEFN-VNIOFFSETS.j2         ← regular
+          9. DEFN-VRF.j2                ← regular
+         10. FUNC-CLIENT-PORTS.j2       ← regular
+         11. FUNC-VRF-LOOKUP.j2         ← regular
+         12. FABRIC-CLIENT-PORTS.j2     ← priority (in composite)
+         13. FABRIC-EVPN.j2             ← priority
+         14. FABRIC-L3OUT.j2            ← priority
+         15. FABRIC-LOOPBACKS.j2        ← priority
+         16. FABRIC-MCAST.j2            ← priority
+         17. FABRIC-NAC.j2              ← priority
+         18. FABRIC-NVE.j2              ← priority
+         19. FABRIC-OVERLAY.j2          ← priority
+         20. FABRIC-VRF.j2              ← priority
+
+Step 4: Composites are processed separately (after all 20 regular templates)
+          21. BGP-EVPN-BUILD.j2         ← composite
 ```
+
+Adding or removing templates from the repository automatically adjusts the ordering — no playbook changes required.
 
 ---
 
 ### Stage 4 — Build Workflow Configurations
 
-```
-sorted_template_files[]
-  └── loop → include_tasks: process-template.yml
-                    │
-                    ▼
-        template_workflow_configs[] (grows each iteration)
+The playbook loops over the sorted template list and composite list, calling an included task file for each item. Each task file appends one configuration entry to a running list:
 
-enriched_composite_files[]
-  └── loop → include_tasks: process-composite.yml
-                    │
-                    ▼
-        composite_workflow_configs[] (grows each iteration)
 ```
+sorted_template_files[] (20 entries)
+  └── include_tasks: process-template.yml  (runs 20 times)
+        └── appends one entry to template_workflow_configs[]
+
+enriched_composite_files[] (1 entry)
+  └── include_tasks: process-composite.yml (runs 1 time)
+        └── appends one entry to composite_workflow_configs[]
+```
+
+See the [Task File Reference](#task-file-reference) section for exact payload structures.
 
 ---
 
 ### Stage 5 — Sync to Catalyst Center
 
+Two sequential calls to `cisco.dnac.template_workflow_manager` with `state: merged`:
+
 ```
-template_workflow_configs[]                composite_workflow_configs[]
-  [{                                          [{
-    configuration_templates: {                 configuration_templates: {
-      template_name: "DEFN-VRF.j2"              template_name: "BGP-EVPN-BUILD.j2"
-      project_name:  "CLUS26-Site1"             project_name:  "CLUS26-Site1"
-      language:      "JINJA"                    composite:     true
-      template_content: "..."                   containing_templates: [
-      device_types:  [...]                        {name: "FABRIC-VRF.j2", ...},
-      software_type: "IOS"                        {name: "FABRIC-NVE.j2", ...},
-      ...                                         ...
-    }                                           ]
-  }, ...]                                    }
-       │                                   }]
-       │                                       │
-       ▼  (call 1)                             ▼  (call 2 — after call 1 completes)
-cisco.dnac.template_workflow_manager    cisco.dnac.template_workflow_manager
-  state: merged                           state: merged
-       │                                       │
-       ▼                                       ▼
-  Creates or updates each              Creates or updates composite
-  individual template in CatC          (child templates guaranteed to
-                                        exist from call 1)
+Call 1 — Regular templates (all 20)
+─────────────────────────────────────
+cisco.dnac.template_workflow_manager:
+  state: merged
+  config: "{{ template_workflow_configs }}"   ← list of 20 entries
+
+  For each template in the list:
+    Does it exist in CatC project?
+    ├── No  → CREATE template (POST to /template-programmer/project/{id}/template)
+    └── Yes → UPDATE template (PUT with new content + new version)
+
+Call 2 — Composite template (1 entry, after Call 1 completes)
+──────────────────────────────────────────────────────────────
+cisco.dnac.template_workflow_manager:
+  state: merged
+  config: "{{ composite_workflow_configs }}"  ← list of 1 entry
+
+  Does it exist in CatC project?
+  ├── No  → CREATE composite (all member templates from Call 1 now guaranteed to exist)
+  └── Yes → UPDATE composite (member list re-synced)
 ```
+
+Both calls are **idempotent**: if a template already exists in CatC with identical content, the module performs no action on it (Ansible shows `ok` instead of `changed`).
 
 ---
 
-## process-template.yml Logic
+## Task File Reference
 
-Called once per template in the sorted loop:
+### process-template.yml
 
-```
-template_file (loop variable)
-  ├── .name          "FABRIC-NVE.j2"
-  ├── .content       raw Jinja2 content from GitHub
-  ├── .commit_message "2026-01-15 | Fix NVE config [Igor M]"
-  └── .diff_content  "@@ -10,5 +10,6 @@..." (or empty string)
-         │
-         ▼
-  1. REPLACE {{ TEMPLATE_PROJECT_NAME }} → projectName
-     (resolves cross-project Jinja include paths at build time)
+Called once per template in the `sorted_template_files` loop. Receives the `template_file` loop variable.
 
-  2. (if include_diff_header: true)
-     wrap diff lines in {## ... ##} Jinja comments
-     → diff_content_raw
-
-  3. Assemble:
-     template_content = diff_content_raw + template_content_raw
-
-  4. Build template_config object:
-     {
-       configuration_templates: {
-         template_name:        "FABRIC-NVE.j2"
-         project_name:         "CLUS26-Site1"
-         language:             "JINJA"
-         template_content:     <assembled content>
-         template_description: "Template synced from Git ... | commit message"
-         device_types:         [{ product_family, product_series }, ...]
-         software_type:        "IOS"
-         software_variant:     "XE"
-         software_version:     null
-         template_params:      []
-         failure_policy:       "ABORT_TARGET_ON_ERROR"
-         version:              "1.0"
-         tags:                 []
-       }
-     }
-
-  5. Append to template_workflow_configs[]
-```
-
----
-
-## process-composite.yml Logic
-
-Called once per composite definition file:
-
-```
-composite_file (loop variable)
-  ├── .name     "BGP-EVPN-BUILD.yml"
-  └── .content  YAML text
-         │
-         ▼
-  1. Parse YAML content → composite_def
-     {
-       # composite_name: "CUSTOM-NAME.j2"  ← optional override
-       templates:
-         - name: "FABRIC-VRF.j2"
-         - name: "FABRIC-NVE.j2"
-         ...
-     }
-
-  2. Resolve composite name:
-     composite_name = composite_def.composite_name
-                   ?? filename with .yml → .j2
-                   = "BGP-EVPN-BUILD.j2"
-
-  3. Build containing_templates_list[]
-     For each template name in composite_def.templates:
-       {
-         name:             "FABRIC-VRF.j2"
-         composite:        false
-         project_name:     "CLUS26-Site1"
-         language:         "JINJA"
-         description:      "description"
-         device_types:     [...]
-         software_type:    "IOS"
-         software_variant: "XE"
-         templateParams:   []
-         tags:             []
-       }
-
-  4. Build composite_config object:
-     {
-       configuration_templates: {
-         template_name:         "BGP-EVPN-BUILD.j2"
-         project_name:          "CLUS26-Site1"
-         composite:             true
-         language:              "JINJA"
-         template_content:      ""
-         template_description:  "Composite template synced from Git repository"
-         device_types:          [...]
-         software_type:         "IOS"
-         software_variant:      "XE"
-         containing_templates:  <containing_templates_list>
-         version:               "1.0"
-         tags:                  []
-       }
-     }
-
-  5. Append to composite_workflow_configs[]
-
-  6. Reset containing_templates_list = []
-     (prepare for next composite iteration)
-```
-
----
-
-## Template Conventions
-
-### File Naming
-
-| Prefix | Purpose | Include in Composite Definition? |
-|--------|---------|----------------------------------|
-| `DEFN-*.j2` | Data definitions — sets Jinja2 variables | ❌ No — included via `{% include %}` at render time |
-| `FUNC-*.j2` | Macro/function libraries | ❌ No — included via `{% include %}` at render time |
-| `FABRIC-*.j2` | Top-level executable config templates | ✅ Yes — listed in composite `.yml` |
-
-### Device Targeting Hint
-
-Optional first-line comment parsed by the playbook:
-
-```jinja
-{## CATC: productFamily=Switches and Hubs, softwareType=IOS-XE, productSeries=Cisco Catalyst 9300 Series Switches ##}
-```
-
-When absent, `default_device_types` from `inventory.yml` is used.
-
-### Cross-Template Includes
-
-Templates reference others using the project name as a path prefix. The playbook substitutes the actual project name at build time:
-
-```jinja
-{% include "{{ TEMPLATE_PROJECT_NAME }}/DEFN-VRF.j2" %}
-```
-
-`{{ TEMPLATE_PROJECT_NAME }}` is replaced with `projectName` from `inventory.yml` (e.g., `CLUS26-Site1`).
-
----
-
-## Composite Template Definitions
-
-A `.yml` file placed anywhere inside `git_repo_subfolder` defines one composite template:
+**Input — `template_file` object:**
 
 ```yaml
-# BGP-EVPN-BUILD.yml
-
-# Optional: override the composite name in CatC
-# composite_name: "CUSTOM-COMPOSITE.j2"
-
-# List top-level FABRIC-* templates only.
-# DEFN-* and FUNC-* are resolved via Jinja {% include %} — do NOT add them here.
-templates:
-  - name: "FABRIC-VRF.j2"
-  - name: "FABRIC-LOOPBACKS.j2"
-  - name: "FABRIC-L3OUT.j2"
-  - name: "FABRIC-NVE.j2"
-  - name: "FABRIC-MCAST.j2"
-  - name: "FABRIC-EVPN.j2"
-  - name: "FABRIC-OVERLAY.j2"
-  - name: "FABRIC-NAC-IOT.j2"
+name: "FABRIC-VRF.j2"
+path: "BGP EVPN/FABRIC-VRF.j2"
+content: "{% include \"{{ TEMPLATE_PROJECT_NAME }}/DEFN-VRF.j2\" %}\n..."
+commit_message: "2026-03-15T14:22:10Z | Add FABRIC-CLIENT-PORTS template [Igor Manassypov]"
+diff_content: ""   # empty when include_diff_header: false
 ```
 
-The composite is created in CatC as `BGP-EVPN-BUILD.j2` (filename `.yml` → `.j2`).
+**Processing steps:**
 
----
+```
+Step 1 — Resolve project name placeholder
+  Replace every occurrence of {{ TEMPLATE_PROJECT_NAME }} in template content
+  with the value of projectName from inventory (e.g., "Building P0")
 
-## Configuration
+  Before: {% include "{{ TEMPLATE_PROJECT_NAME }}/DEFN-VRF.j2" %}
+  After:  {% include "Building P0/DEFN-VRF.j2" %}
 
-### ansible.cfg
+Step 2 — Wrap diff (if include_diff_header: true)
+  Each line of diff_content is wrapped in a Jinja2 comment:
+  "@@ -10,5 +10,6 @@" → "{## @@ -10,5 +10,6 @@ ##}"
+  The full wrapped diff becomes diff_content_raw.
 
-Located in the playbook directory — eliminates the need for `-i` on every run:
+Step 3 — Assemble final template content
+  template_content = diff_content_raw + template_content_raw
+  (diff header at top, Jinja2 configuration content below)
 
-```ini
-[defaults]
-inventory = inventory.yml
+Step 4 — Build the config entry
+  Append to template_workflow_configs[]:
 ```
 
-> **Note:** The directory must not be world-writable (`chmod o-w .`) or Ansible will ignore `ansible.cfg` for security reasons.
-
-### inventory.yml
-
-All connection and repository parameters:
+**Output — one entry appended to `template_workflow_configs[]`:**
 
 ```yaml
-all:
-  hosts:
-    catalyst_center:
-      ansible_host: localhost
-      ansible_connection: local
-      ansible_python_interpreter: "{{ ansible_playbook_python }}"
-
-      # Catalyst Center connection
-      dnac_host: dnac.example.com
-      dnac_port: 443
-      dnac_version: 2.3.7.6
-      dnac_verify: false
-      dnac_debug: true
-      dnac_log_level: INFO
-      dnac_log: true
-
-      # Git repository
-      git_repo: "https://github.com/org/repo.git"
-      git_branch: "main"
-      git_repo_subfolder: "BGP EVPN"   # subfolder within repo (leave blank for root)
-      # git_token: (define in vault.yml for private repos or to raise API rate limits)
-
-      # CatC project name (overrides name derived from folder path)
-      projectName: "MyProject"
-
-      # Template defaults
-      template_extension: "j2"
-      include_diff_header: false
-      default_software_type: "IOS"
-      default_software_variant: "XE"
-      default_template_version: "1.0"
-      catc_template_summary_maxchar: 1024
-
-      default_device_types:
-        - product_family: "Switches and Hubs"
-          product_series: "Cisco Catalyst 9500 Series Switches"
-        - product_family: "Switches and Hubs"
-          product_series: "Cisco Catalyst 9300 Series Switches"
-```
-
-### vault.yml
-
-Store credentials only — encrypt with `ansible-vault`:
-
-```yaml
-dnac_username: "admin"
-dnac_password: "your_password"
-# git_token: "ghp_..."   # optional, for private repos
+configuration_templates:
+  template_name: "FABRIC-VRF.j2"
+  project_name: "Building P0"
+  language: "JINJA"
+  template_content: |
+    {% include "Building P0/DEFN-VRF.j2" %}
+    {% include "Building P0/FUNC-VRF-LOOKUP.j2" %}
+    ...
+  template_description: "2026-03-15T14:22:10Z | Add FABRIC-CLIENT-PORTS template [Igor Manassypov]"
+  device_types:
+    - product_family: "Switches and Hubs"
+      product_series: "Cisco Catalyst 9500 Series Switches"
+    - product_family: "Switches and Hubs"
+      product_series: "Cisco Catalyst 9300 Series Switches"
+  software_type: "IOS"
+  software_variant: "XE"
+  software_version: null
+  template_params: []
+  failure_policy: "ABORT_TARGET_ON_ERROR"
+  version: "1.0"
+  tags: []
 ```
 
 ---
 
-## Setup & Usage
+### process-composite.yml
 
-### Prerequisites
+Called once per composite definition file. Receives the `composite_file` loop variable.
 
-```bash
-# Install Python dependencies
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+**Input — `composite_file` object:**
 
-# Install Ansible Galaxy collections
-ansible-galaxy collection install -r requirements.yml
+```yaml
+name: "BGP-EVPN-BUILD.yml"
+path: "BGP EVPN/BGP-EVPN-BUILD.yml"
+content: |
+  templates:
+    - name: "FABRIC-VRF.j2"
+    - name: "FABRIC-LOOPBACKS.j2"
+    ...
 ```
 
-### Credentials
+**Processing steps:**
 
-```bash
-# Create vault file from template and populate credentials
-cp vault.yml.example vault.yml
+```
+Step 1 — Parse YAML content
+  composite_def = content | from_yaml
+  → {
+      templates: [
+        {name: "FABRIC-VRF.j2"},
+        {name: "FABRIC-LOOPBACKS.j2"},
+        ...
+      ]
+    }
 
-# Edit vault.yml with your CatC credentials (and optional git_token for private repos)
-# then encrypt with Ansible Vault:
-ansible-vault encrypt vault.yml
+Step 2 — Resolve composite name
+  composite_name = composite_def.composite_name
+                ?? filename with .yml replaced by .j2
+                = "BGP-EVPN-BUILD.j2"
 
-# Store the vault password in a local file (gitignored):
-echo 'your_vault_password' > .vault_pass
-chmod 600 .vault_pass
+Step 3 — Build containing_templates_list[]
+  For each template name in composite_def.templates, create an entry:
+  {
+    name:             "FABRIC-VRF.j2"
+    composite:        false
+    project_name:     "Building P0"
+    language:         "JINJA"
+    description:      "description"
+    device_types:     [...]
+    software_type:    "IOS"
+    software_variant: "XE"
+    templateParams:   []
+    tags:             []
+  }
+
+Step 4 — Build the composite config entry
+  Append to composite_workflow_configs[]
+
+Step 5 — Reset containing_templates_list = []
+  (required — prevents member list from accumulating across composites)
 ```
 
-### Fix Directory Permissions (one-time)
+**Output — one entry appended to `composite_workflow_configs[]`:**
 
-Ansible ignores `ansible.cfg` if the directory is world-writable:
-
-```bash
-chmod o-w .
+```yaml
+configuration_templates:
+  template_name: "BGP-EVPN-BUILD.j2"
+  project_name: "Building P0"
+  composite: true
+  language: "JINJA"
+  template_content: ""           # always empty — rendered content comes from members
+  template_description: "Composite template synced from Git repository"
+  device_types:
+    - product_family: "Switches and Hubs"
+      product_series: "Cisco Catalyst 9500 Series Switches"
+    - product_family: "Switches and Hubs"
+      product_series: "Cisco Catalyst 9300 Series Switches"
+  software_type: "IOS"
+  software_variant: "XE"
+  software_version: null
+  template_params: []
+  failure_policy: "ABORT_TARGET_ON_ERROR"
+  version: "1.0"
+  containing_templates:
+    - name: "FABRIC-VRF.j2"
+      composite: false
+      project_name: "Building P0"
+      language: "JINJA"
+      description: "description"
+      device_types: [...]
+      software_type: "IOS"
+      software_variant: "XE"
+      templateParams: []
+      tags: []
+    - name: "FABRIC-LOOPBACKS.j2"
+      # ... same structure ...
+    # ... 7 more FABRIC-* entries ...
+  tags: []
 ```
 
-### Run
+---
+
+## API Payload Reference
+
+### GitHub API — Repository Tree
+
+```http
+GET https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1
+Accept: application/vnd.github+json
+X-GitHub-Api-Version: 2022-11-28
+Authorization: Bearer ghp_...   (if git_token defined)
+```
+
+Response (abbreviated):
+```json
+{
+  "sha": "abc123...",
+  "tree": [
+    {"path": "BGP EVPN/DEFN-VRF.j2",         "type": "blob", "sha": "..."},
+    {"path": "BGP EVPN/FABRIC-VRF.j2",        "type": "blob", "sha": "..."},
+    {"path": "BGP EVPN/BGP-EVPN-BUILD.yml",   "type": "blob", "sha": "..."}
+  ],
+  "truncated": false
+}
+```
+
+> If `truncated: true`, the repository has more than 100,000 files. This playbook does not handle recursive tree pagination — use `git_repo_subfolder` to scope the scan to a subdirectory.
+
+### GitHub API — Last Commit per File
+
+```http
+GET https://api.github.com/repos/{owner}/{repo}/commits
+    ?path=BGP%20EVPN/FABRIC-VRF.j2&per_page=1&sha=main
+```
+
+Response (abbreviated):
+```json
+[
+  {
+    "sha": "def456...",
+    "commit": {
+      "author": {
+        "name": "Igor Manassypov",
+        "date": "2026-03-15T14:22:10Z"
+      },
+      "message": "feat: add client-ports template"
+    }
+  }
+]
+```
+
+### CatC — template_workflow_manager (state: merged)
+
+The `cisco.dnac.template_workflow_manager` module translates each `configuration_templates` entry into the appropriate CatC Template Programmer API calls. The `state: merged` behaviour:
+
+- Template does **not** exist in project → `POST /dna/intent/api/v1/template-programmer/project/{projectId}/template`
+- Template **exists** and content has changed → `PUT /dna/intent/api/v1/template-programmer/template/{templateId}` + `POST .../template/version` (commit)
+- Template exists and content is identical → no-op (`ok` in Ansible output)
+
+---
+
+## Running the Playbook
+
+All commands assume you are in the playbook directory with the virtual environment activated.
 
 ```bash
-# Standard run — inventory loaded automatically via ansible.cfg
+# Standard run — reads inventory.yml automatically via ansible.cfg
 ansible-playbook ansible-git-catc.yml --vault-password-file .vault_pass
 
-# Interactive vault password prompt
+# Interactive vault prompt (if .vault_pass not set up)
 ansible-playbook ansible-git-catc.yml --ask-vault-pass
 
-# Debug mode — shows sorted template list, workflow configs, and sync results
+# Override specific inventory variables at runtime
+ansible-playbook ansible-git-catc.yml \
+  --vault-password-file .vault_pass \
+  -e "projectName=MyTestProject" \
+  -e "git_branch=feature-xyz"
+
+# Debug mode — prints enriched template list, workflow configs, and CatC sync results
+DEBUG=true ansible-playbook ansible-git-catc.yml --vault-password-file .vault_pass
+
+# Syntax check (no connection required)
+ansible-playbook ansible-git-catc.yml --syntax-check --vault-password-file .vault_pass
+
+# Dry run — shows what would change without actually connecting to CatC
+ansible-playbook ansible-git-catc.yml --check --vault-password-file .vault_pass
+```
+
+---
+
+## Debug Mode
+
+Set `DEBUG=true` as an environment variable before the playbook command to enable verbose output.
+
+```bash
 DEBUG=true ansible-playbook ansible-git-catc.yml --vault-password-file .vault_pass
 ```
 
+| Debug task | Variable / content shown |
+|---|---|
+| Execution timestamp | `start_timestamp.date + time` |
+| GitHub repo slug | `git_repo_slug` — confirms URL parsing |
+| Project name | `projectName` — confirms derived or overridden value |
+| Templates in composites | `composite_referenced_templates[]` — names extracted from `.yml` definitions |
+| Sorted template list | `sorted_template_files[].name` — final processing order |
+| Template workflow configs | `template_workflow_configs[]` — full list of config objects before sync |
+| Composite workflow configs | `composite_workflow_configs[]` — full composite config objects |
+| Template sync result | `template_sync_result` — full response from first `template_workflow_manager` call |
+| Composite sync result | `composite_sync_result` — full response from second `template_workflow_manager` call |
+
 ---
 
-## Compatibility Matrix
+## Expected Output
 
-Match `dnac_version` in `inventory.yml` to your Catalyst Center version.
-This playbook suite ships `requirements.yml` pinned to `cisco.dnac 6.46.0`, which is verified compatible with CatC 2.3.7.6 and 2.3.7.9.
+A successful run with 20 regular templates and 1 composite (all already up to date):
 
-| Cisco Catalyst Center | `cisco.dnac` Collection | `dnacentersdk` | Notes |
-|-----------------------|-------------------------|----------------|-------|
-| 2.3.5.3 | 6.13.3 | 2.6.11 | Legacy |
-| 2.3.7.6 | 6.25.0 – **6.46.0** | 2.8.3 – 2.8.6 | Lab baseline; **6.46.0 verified** |
-| 2.3.7.9 | 6.33.2 – **6.46.0** | 2.8.6 | Recommended; **6.46.0 verified** |
-| 3.1.3.0 | ≥ 6.36.0 | ≥ 2.10.1 | Latest |
+```
+PLAY [Template Synchronization from Git using Template Workflow Manager] ******
+
+TASK [Set execution timestamp] ************************************************
+ok: [catalyst_center]
+
+TASK [Parse GitHub repository slug from git_repo URL] ************************
+ok: [catalyst_center]
+
+TASK [Verify GitHub repository is accessible] ********************************
+ok: [catalyst_center]
+
+TASK [Verify Git branch exists in repository] ********************************
+ok: [catalyst_center]
+
+TASK [Fetch repository file tree from GitHub API] ****************************
+ok: [catalyst_center]
+
+TASK [Build template and composite file lists from repository tree] **********
+ok: [catalyst_center]
+
+TASK [Fetch template file contents from GitHub] ******************************
+ok: [catalyst_center] => (item=DEFN-CLIENT-PORTS.j2)
+ok: [catalyst_center] => (item=DEFN-VRF.j2)
+...
+ok: [catalyst_center] => (item=FABRIC-VRF.j2)
+
+TASK [Fetch last commit info for each template file] *************************
+ok: [catalyst_center] => (item=DEFN-CLIENT-PORTS.j2)
+...
+
+TASK [Build enriched template file objects] **********************************
+ok: [catalyst_center] => (item=DEFN-CLIENT-PORTS.j2)
+...
+
+TASK [Synchronize all templates using template_workflow_manager] *************
+ok: [catalyst_center]    ← "ok" means templates already exist with matching content
+
+TASK [Synchronize composite templates using template_workflow_manager] ********
+ok: [catalyst_center]
+
+TASK [Display synchronization summary] ***************************************
+ok: [catalyst_center] =>
+  msg:
+    - "Template synchronization completed successfully"
+    - "Project: Building P0"
+    - "Regular templates synced: 20"
+    - "Composite templates synced: 1"
+    - "Timestamp: 2026-03-26 13:21:01"
+
+PLAY RECAP ****************************
+catalyst_center : ok=108  changed=0  unreachable=0  failed=0  skipped=5  rescued=0  ignored=0
+```
+
+> **`ok` vs `changed`:**  
+> - `ok` — CatC already has the template with matching content; no changes made.  
+> - `changed` — Template was created or updated.  
+> - The high `ok` count (~108) is normal — each template goes through ~5 Ansible tasks internally inside `template_workflow_manager`.
+
+---
+
+## Playbook Ordering Dependency
+
+This playbook is **Step 6** in the full lab automation chain. Templates must exist in CatC before a network profile (Step 7) can bind them to a site, and network profiles must exist before devices can be provisioned (Step 8).
+
+```
+1.0 Site Hierarchy
+2.0 Settings
+3.0 Credentials
+4.0 Device Discovery
+5.0 Assign to Site
+6.0 Templates (this playbook) ←── syncs Jinja2 templates from GitHub to CatC
+7.0 Network Profile            ←── binds templates to site hierarchy
+8.0 Provision Composite        ←── deploys composite template to managed devices
+```
+
+> Running playbooks out of order will result in errors. For example, running 8.0 before 6.0 will fail because the composite `BGP-EVPN-BUILD.j2` does not yet exist in CatC.
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `No inventory was parsed` | `ansible.cfg` ignored | Run `chmod o-w .` on the project directory |
-| `NCTP10073: syntax errors` | CatC Jinja2 parser limitation (e.g., `not in`) | Rewrite to `not X in Y` in source template |
-| Composite fails with missing templates | Individual templates not synced first | Ensure templates in composite `.yml` exist in CatC; the playbook handles ordering automatically |
-| `403` from GitHub API | Rate limit or missing token for private repo | Add `git_token` to `vault.yml` |
-| Wrong templates picked up | `git_repo_subfolder` not set or wrong | Verify subfolder path matches repository structure |
-
----
-
-## References
-
-- [Cisco DNA Center Ansible Collection](https://cisco-en-programmability.github.io/dnacenter-ansible/main/plugins/index.html)
-- [Cisco Catalyst Center API Reference](https://developer.cisco.com/docs/dna-center/)
-- [Sample Template Repository — CatalystCenter-BGP-EVPN-VXLAN](https://github.com/imanassypov/CatalystCenter-BGP-EVPN-VXLAN)
-- [CI/CD Pipeline inspiration](https://gitlab.com/oboehmer/dnac-template-as-code) by Oliver Boehmer
-
----
-
-## Author
-
-**Igor Manassypov**  
-Systems Engineer, Cisco Systems  
-[imanassy@cisco.com](mailto:imanassy@cisco.com)  
-Copyright © 2024–2026 Cisco Systems, Inc. All rights reserved.
+| Symptom | Likely Cause | Resolution |
+|---|---|---|
+| `No inventory was parsed` | `ansible.cfg` is being ignored | Run `chmod o-w .` — Ansible ignores `ansible.cfg` in world-writable directories |
+| `Repository not found` (404 from GitHub) | `git_repo` URL incorrect, or repo is private without a token | Verify the URL in `inventory.yml`; set `git_token` in `vault.yml` for private repos |
+| `Branch not found` (404 from GitHub) | `git_branch` does not exist in the repository | Verify the branch name in `inventory.yml` |
+| `HTTP Error 403: rate limit exceeded` | No `git_token` set; GitHub limits unauthenticated calls to 60/hr per IP | Set `git_token` in `vault.yml` — authenticated calls allow 5,000/hr |
+| `NCTP10073: syntax error in template` | CatC Jinja2 parser limitation — some Python Jinja2 syntax is not supported (e.g., `not X in Y` vs `X not in Y`) | Rewrite the affected line in the source template; `not in` may need to be written as `not X in Y` |
+| Composite created but device config is wrong | Member templates applied in wrong order | Check the `templates:` list order in your `.yml` composite definition — the order maps directly to the device config rendering sequence |
+| Template update not reflected in CatC | Template content appears identical to CatC | `template_workflow_manager` compares content — ensure the file actually changed in Git before running the sync |
+| `VAULT_CiPHER_SUITE unavailable` | Python `cryptography` package not installed | Run `pip install -r requirements.txt` |
+| Missing templates after partial run | Playbook was interrupted mid-run (process killed, connection lost) | Re-run the playbook — `state: merged` is idempotent; completed templates are skipped, missing ones are created |
+| Wrong templates synced (wrong project or subfolder) | `projectName` or `git_repo_subfolder` misconfigured | Verify both in `inventory.yml`; use `DEBUG=true` to check `projectName` and the sorted template list |

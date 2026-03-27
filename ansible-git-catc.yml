@@ -54,6 +54,32 @@
       set_fact:
         git_auth_header: "{{ {'Authorization': 'Bearer ' + git_token} if (git_token is defined and git_token | length > 0) else {} }}"
 
+    - name: Verify GitHub repository is accessible
+      uri:
+        url: "{{ git_api_base }}/repos/{{ git_repo_slug }}"
+        method: GET
+        headers: "{{ git_auth_header | combine({'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}) }}"
+        status_code: [200, 404]
+      register: git_repo_check
+
+    - name: Fail if GitHub repository not found
+      fail:
+        msg: "Repository not found: '{{ git_repo_slug }}'. Verify git_repo in inventory (HTTP {{ git_repo_check.status }})."
+      when: git_repo_check.status != 200
+
+    - name: Verify Git branch exists in repository
+      uri:
+        url: "{{ git_api_base }}/repos/{{ git_repo_slug }}/branches/{{ git_branch | default('HEAD') }}"
+        method: GET
+        headers: "{{ git_auth_header | combine({'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}) }}"
+        status_code: [200, 404]
+      register: git_branch_check
+
+    - name: Fail if Git branch not found in repository
+      fail:
+        msg: "Branch '{{ git_branch | default('HEAD') }}' not found in '{{ git_repo_slug }}'. Verify git_branch in inventory (HTTP {{ git_branch_check.status }})."
+      when: git_branch_check.status != 200
+
     - name: Fetch repository file tree from GitHub API
       uri:
         url: "{{ git_api_base }}/repos/{{ git_repo_slug }}/git/trees/{{ git_branch | default('HEAD') }}?recursive=1"
