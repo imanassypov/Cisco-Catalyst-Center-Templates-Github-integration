@@ -66,6 +66,31 @@ Point the playbook at any GitHub repository subfolder containing `.j2` files and
 
 ---
 
+## API Endpoints and Modules Summary
+
+### Modules Summary
+
+| Platform | Module | Purpose in this playbook | Module Docs |
+|---|---|---|---|
+| Cisco Catalyst Center | cisco.dnac.template_workflow_manager | Create or update template and composite template objects in CatC | cisco.dnac 6.46.0: [template_workflow_manager](https://galaxy.ansible.com/ui/repo/published/cisco/dnac/content/module/template_workflow_manager/) |
+| GitHub API | ansible.builtin.uri | Repository verification, branch checks, tree listing, file/commit/diff fetch | ansible-core: [uri](https://docs.ansible.com/ansible/latest/collections/ansible/builtin/uri_module.html) |
+
+### Endpoint Summary by Phase
+
+| Phase | HTTP | Endpoint | Why it is used | API Docs |
+|---|---|---|---|---|
+| Repository access check | GET | https://api.github.com/repos/{owner}/{repo} | Validate repository exists and token access is valid | GitHub REST: [Repositories API](https://docs.github.com/en/rest/repos/repos) |
+| Branch validation | GET | https://api.github.com/repos/{owner}/{repo}/branches/{branch} | Confirm requested branch is available | GitHub REST: [Branches API](https://docs.github.com/en/rest/branches/branches) |
+| Tree discovery | GET | https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1 | Enumerate candidate template and composite files | GitHub REST: [Git trees API](https://docs.github.com/en/rest/git/trees) |
+| Raw template/composite content | GET | https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path} | Pull source template text used for CatC sync | GitHub docs: [Raw file URLs](https://docs.github.com/en/repositories/working-with-files/using-files/viewing-and-understanding-files#viewing-or-copying-the-raw-file-content) |
+| Commit metadata and diff | GET | https://api.github.com/repos/{owner}/{repo}/commits?... | Build template summary metadata and optional diff header | GitHub REST: [Commits API](https://docs.github.com/en/rest/commits/commits) |
+| CatC template sync | module-managed | Template-programmer endpoints used by template_workflow_manager | Apply merged template/composite state in target CatC project | CatC 2.3.7.9: [API Reference](https://developer.cisco.com/docs/catalyst-center/2-3-7-9/cisco-catalyst-center-2-3-7-9-api-overview) |
+
+### Notes
+
+- GitHub calls are direct uri tasks; Catalyst Center writes are module-managed.
+- The section above lists the primary endpoint families used by the workflow stages.
+
 ## Prerequisites
 
 | Requirement | Version | Where to Get It |
@@ -948,6 +973,113 @@ This playbook is **Step 6** in the full lab automation chain. Templates must exi
 ```
 
 > Running playbooks out of order will result in errors. For example, running 8.0 before 6.0 will fail because the composite `BGP-EVPN-BUILD.j2` does not yet exist in CatC.
+
+---
+
+## Data Transformation Reference
+
+```
+git_repo (GitHub URL)
+    │
+    ▼ Stage 1 — GET /repos/{slug}/git/trees/{branch}?recursive=1
+raw tree[] (all files in repo)
+    filter: path starts with git_repo_subfolder/
+    ├─ filter: ends with .j2  → api_template_files[]
+    └─ filter: ends with .yml → api_composite_files[]
+    │
+    ▼ Stage 2 — per file: GET raw content + GET last commit metadata
+enriched_template_files[]  = [{ name, path, content, commit_message, diff_content }]
+enriched_composite_files[] = [{ name, path, content (YAML parsed) }]
+    │
+    ▼ Stage 3 — composite .yml parsed → composite_referenced_templates[]
+    template NOT in composite_referenced → regular_template_list[]   ← DEFN-*, FUNC-*
+    template     in composite_referenced → priority_template_list[]  ← FABRIC-*
+sorted_template_files = regular_template_list + priority_template_list
+    │                ← un-referenced templates first, composite members last
+    ▼ Stage 4 — include_tasks: process-template.yml / process-composite.yml
+template_workflow_configs[]  ← one entry per .j2 file
+composite_workflow_configs[] ← one entry per .yml composite file
+    │
+    ▼ Stage 5 — cisco.dnac.template_workflow_manager (state: merged)
+    call 1: templates  → POST /dna/intent/api/v1/template-programmer/project/{id}/template
+    call 2: composites → POST /dna/intent/api/v1/template-programmer/project/{id}/template
+                         (composite: true, containing_templates: [...])
+```
+
+**Before — GitHub tree API response (truncated):**
+
+```json
+{
+  "tree": [
+    { "path": "BGP_EVPN/DayNTemplates/DEFN-LOOPBACKS.j2",  "type": "blob" },
+    { "path": "BGP_EVPN/DayNTemplates/FABRIC-NVE.j2",      "type": "blob" },
+    { "path": "BGP_EVPN/DayNTemplates/BGP-EVPN-BUILD.yml",  "type": "blob" },
+    { "path": "BGP_EVPN/DayNTemplates/README.md",           "type": "blob" }
+  ]
+}
+```
+
+> Only entries under `git_repo_subfolder/` matching `.j2` or `.yml` are kept. All other file types (`.md`, `.png`, `.json`, etc.) are silently ignored.
+
+**After — filtered file lists:**
+
+```json
+{
+  "api_template_files":  ["BGP_EVPN/DayNTemplates/DEFN-LOOPBACKS.j2", "BGP_EVPN/DayNTemplates/FABRIC-NVE.j2"],
+  "api_composite_files": ["BGP_EVPN/DayNTemplates/BGP-EVPN-BUILD.yml"]
+}
+```
+
+**After — template ordering decision (Stage 3):**
+
+```
+BGP-EVPN-BUILD.yml defines containing_templates: [FABRIC-NVE.j2, ...]
+
+regular_template_list  → [DEFN-LOOPBACKS.j2]   ← not referenced by any composite
+priority_template_list → [FABRIC-NVE.j2]        ← referenced in BGP-EVPN-BUILD.yml
+
+sorted_template_files  = [DEFN-LOOPBACKS.j2, FABRIC-NVE.j2]
+```
+
+**After — `template_workflow_configs[0]`** (submitted in Stage 5 call 1):
+
+```json
+{
+  "configuration_templates": {
+    "template_name":        "DEFN-LOOPBACKS.j2",
+    "project_name":         "Building P0",
+    "language":             "JINJA",
+    "template_content":     "...",
+    "template_description": "Template synced from Git Building P0 | add loopback definitions",
+    "device_types":         [{ "product_family": "Switches and Hubs", "product_series": "Cisco Catalyst 9000 Series" }],
+    "software_type":        "IOS",
+    "software_variant":     "XE",
+    "composite":            false,
+    "failure_policy":       "ABORT_TARGET_ON_ERROR",
+    "version":              "1.0"
+  }
+}
+```
+
+**After — `composite_workflow_configs[0]`** (submitted in Stage 5 call 2):
+
+```json
+{
+  "configuration_templates": {
+    "template_name":        "BGP-EVPN-BUILD.j2",
+    "project_name":         "Building P0",
+    "language":             "JINJA",
+    "composite":            true,
+    "template_content":     "",
+    "containing_templates": [
+      { "name": "DEFN-LOOPBACKS.j2", "composite": false, "project_name": "Building P0" },
+      { "name": "FABRIC-NVE.j2",     "composite": false, "project_name": "Building P0" }
+    ]
+  }
+}
+```
+
+Templates are synced in two separate `template_workflow_manager` calls: all individual templates first, then all composite templates. This guarantees every member template exists in Catalyst Center before the composite that references it is created or updated.
 
 ---
 

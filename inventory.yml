@@ -30,6 +30,8 @@ all:
       # Git Repository Configuration
       git_repo: "https://github.com/imanassypov/CatalystCenter-BGP-EVPN-VXLAN.git"
       git_branch: "main"
+      #git_branch: "fix/dict-of-dict-refactor"  # optional, defaults to main
+      #git_token: "{{ vault_git_token }}"  # optional, for private repos or to raise API rate limits; when omitted, runs unauthenticated (suitable for public repositories)
       # Subfolder within the repository that contains the templates to sync.
       # Equivalent to the folder that git_local_dest previously pointed at.
       # Leave unset (or set to "") to scan the entire repository root.
